@@ -1,12 +1,12 @@
 # Deploying Prisma AIRS AI Runtime on Kong AI Gateway 2.x
 
 **Scope:** Konnect AI Gateway 2.x control plane (SaaS), self-managed data planes running in containers.
-**Outcome:** every prompt and every LLM response transiting the gateway is scanned by Prisma AIRS AI Runtime (API Intercept) and blocked on policy violation.
+**Outcome:** every prompt transiting the gateway is scanned by Prisma AIRS AI Runtime (API Intercept) and blocked on policy violation, and so is every non-streamed LLM response. A request that sets `stream: true` is not response-scanned: Kong skips the `OUTPUT` phase entirely, with no error and no warning. Scope your deployment around that before you start — see Operational considerations.
 **Change footprint:** two declarative policy objects and one environment variable. No custom plugin, no data plane image rebuild, no application code change.
 
 ---
 
-## 1. How it works
+## How it works
 
 ```
    Client app
@@ -34,7 +34,7 @@
 
 ---
 
-## 2. Prerequisites
+## Prerequisites
 
 Validate all five before starting. Each has a one-line check.
 
@@ -56,7 +56,7 @@ If your Prisma AIRS tenant is not on the global endpoint, replace the URL in eve
 
 ---
 
-## 3. Step 1 — Prepare Prisma AIRS
+## Step 1 — Prepare Prisma AIRS
 
 In Strata Cloud Manager:
 
@@ -67,7 +67,7 @@ In Strata Cloud Manager:
 
 ---
 
-## 4. Step 2 — Provision the API key on the data planes
+## Step 2 — Provision the API key on the data planes
 
 The policy configuration never contains the key in clear text. It carries a reference, `{vault://env/airs-token}`, which Kong resolves at runtime against the environment variable `AIRS_TOKEN` on the data plane. The reference sits in `request.auth.value`, the schema slot meant for a guardrail credential: it is referenceable, so the vault reference resolves, and it is stored encrypted. Keeping the key out of `config.params` also keeps it out of the `conf` table that guardrail functions receive.
 
@@ -120,7 +120,7 @@ If your organisation requires a managed secret store, Kong supports Azure Key Va
 
 ---
 
-## 5. Step 3 — Apply the AI Policies
+## Step 3 — Apply the AI Policies
 
 Use [`config/kongctl/airs-guardrail.yaml`](../config/kongctl/airs-guardrail.yaml) from this repository. Adjust `params.profile` to your Prisma AIRS profile name and `params.app_name` to a label that will identify this gateway in your Prisma AIRS scan logs.
 
@@ -211,7 +211,7 @@ deck gateway sync config/deck/airs-guardrail.yaml \
 
 ---
 
-## 6. Step 4 — Attach a policy to your AI Model
+## Step 4 — Attach a policy to your AI Model
 
 Add **one** reference to the `policies` array of the AI Model you want to protect, then re-apply that model definition. Do not reference both policies on the same model: Kong runs a single instance of a given plugin per request, so a second guardrail reference does not add coverage, and `airs-scan` already covers both directions.
 
@@ -261,7 +261,7 @@ To protect every model on the gateway with the same policy instead, declare that
 
 ---
 
-## 7. Step 5 — Validate
+## Step 5 — Validate
 
 **Before pointing this at your real Prisma AIRS key, capture what the policy actually sends.** Point `request.url` at a throwaway echo endpoint and a disposable token, apply that variant, send one request, and inspect the payload the plugin emitted — in particular the shape of `contents[]`. This confirms the configuration builds the request you expect before your production credential and your production prompts are involved. Revert `request.url` and the token once satisfied.
 
@@ -295,7 +295,7 @@ Case 5 matters as much as the blocking cases. It is the one that reveals an over
 
 ---
 
-## 8. Step 6 — Progressive rollout
+## Step 6 — Progressive rollout
 
 1. Attach `airs-prompt-scan` to a single non-production model, with the Prisma AIRS profile in **alert-only**.
 2. Run real traffic for several days. Review the scan logs in Strata Cloud Manager and tune the profile there. Profile changes take effect without any Kong redeployment.
@@ -305,7 +305,7 @@ Case 5 matters as much as the blocking cases. It is the one that reveals an over
 
 ---
 
-## 9. Operational considerations
+## Operational considerations
 
 **Streaming.** A request that sets `stream: true` is not response-scanned. The `OUTPUT` phase is skipped entirely: the guardrail service receives no call, the complete stream reaches the client, and no error is raised. Prompt scanning still applies, so a streaming request keeps `INPUT` coverage and loses `OUTPUT` coverage, silently. Decide which of the two you want: either refuse `stream: true` at the gateway or in your client contract and keep `airs-scan` everywhere, or attach `airs-prompt-scan` to streaming models and record that those models have prompt-only coverage. What you must not do is attach `airs-scan` to a streaming model and assume the response is inspected. `config.response_buffer_size` (default 100 bytes, set to 65536 here) governs how much of a buffered, non-streamed response is accumulated before the guardrail call; it has no effect on a streamed response.
 
@@ -328,7 +328,7 @@ Either change alone still blocks: `stop_on_error: false` only stops the plugin's
 
 ---
 
-## 10. Troubleshooting
+## Troubleshooting
 
 | Symptom | Likely cause | Action |
 |---|---|---|
@@ -348,7 +348,7 @@ Either change alone still blocks: `stop_on_error: false` only stops the plugin's
 
 ---
 
-## 11. References
+## References
 
 - Kong, AI Custom Guardrail plugin: https://developer.konghq.com/plugins/ai-custom-guardrail/
 - Kong, AI Custom Guardrail configuration reference: https://developer.konghq.com/plugins/ai-custom-guardrail/reference/

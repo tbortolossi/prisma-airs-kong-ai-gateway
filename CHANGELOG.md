@@ -8,6 +8,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `docs/deployment-guide.md`: the **Outcome** line claimed that every prompt and
+  every response transiting the gateway is scanned. That is false for a streamed
+  response, as the same document already said nine sections further down. It now
+  states the streaming exception where the reader decides whether the deployment
+  meets the requirement.
+- `docs/deployment-guide.md`: dropped the section numbers from the headings. They
+  ran one to eleven while the procedure runs Step 1 to Step 6, so "section 5" and
+  "Step 3" named the same place. The step headings keep their own numbering, which
+  is the one the text cross-references.
 - `docs/sources.md`: the `ScanRequest` and `ScanResponse` property lists were
   incomplete. Both models carry three optional correlation identifiers —
   `tr_id`, `session_id` and `transaction_id` — and none of them is deprecated.
@@ -23,6 +32,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- README: an `IMPORTANT` callout above the fold stating that `stream: true`
+  silently bypasses response scanning. The finding was already documented in
+  *Scope and limits* and in *Design decisions*, but only for a reader who got
+  that far — it belongs where deployment scope is decided, not where it is
+  verified.
 - `docs/deployment-guide.md`: a "Scan correlation" operational consideration and
   a matching troubleshooting row, stating that no correlation identifier is sent
   and what that means when reading the Prisma AIRS scan logs — the two scans of
