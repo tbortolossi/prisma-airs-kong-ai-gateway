@@ -221,8 +221,12 @@ for models that serve streaming responses. Exactly one is attached per AI Model
 plugin overview documents as `INPUT` / `OUTPUT`.
 
 The earlier layout attached one `INPUT` policy and one `OUTPUT` policy to the
-same model. That does not work: Kong keys a plugin instance on
-`{name, route, service, consumer}`, and that key
+same model. Attaching two is accepted by the AI Gateway 2.x API — measured, the
+model came back with both in its `policies` array — but it does not give
+prompt-and-response coverage, and which of the two runs is not something the
+declaration order controls: with both attached, the `INPUT` policy was the one
+that executed. On the deck side the same thing is rejected outright, because
+Kong keys a plugin instance on `{name, route, service, consumer}`, and that key
 ([`cache_key`](https://github.com/Kong/kong/blob/master/kong/db/schema/entities/plugins.lua))
 is a unique column in the underlying Postgres table
 ([`000_base.lua`](https://github.com/Kong/kong/blob/master/kong/db/migrations/core/000_base.lua)),
@@ -251,16 +255,26 @@ optionally followed by " [scan_id=...]" — never the category or the detection
 names, and the same generic message is returned on a fail-closed block as on a
 real detection. Naming the detection to the caller is an evasion oracle: it lets
 an attacker use the block response itself to map which inputs trip which
-detector. The category and the detection names still reach `metrics.block_reason`
-/ `metrics.block_detail` in Kong's own telemetry and the Prisma AIRS scan logs in
-Strata Cloud Manager, correlated by `scan_id`. Palo Alto's own reference
+detector. The detection detail is not lost: it is in the Prisma AIRS scan logs
+in Strata Cloud Manager, correlated by `scan_id`, which is the channel to rely
+on. The configuration also routes it to `metrics.block_reason` /
+`metrics.block_detail`; the schema accepts those fields, but they do not surface
+on the data plane's own metrics endpoint, even with the Prometheus policy and
+`ai_metrics` enabled — whose AI families are LLM request, cost and token
+counters, not guardrail metrics. Treat Kong-side metrics as unconfirmed and
+Strata Cloud Manager as the record. Palo Alto's own reference
 integration ([`request-callout` config](https://github.com/PaloAltoNetworks/prisma-airs-integrations))
 follows the same pattern, returning a generic "Blocked by AI security scan".
 
-**Secrets by reference.** The API key is a `{vault://env/airs-token}` reference
-resolved by the data plane at runtime. `config.params` is a referenceable field,
-so the substitution happens there. The key never transits the SaaS control plane
-and never appears in version control.
+**Secrets in the slot built for them.** The API key is a
+`{vault://env/airs-token}` reference resolved by the data plane at runtime, and
+it is carried by `request.auth` (`location: header`, `name: x-pan-token`) rather
+than by `config.params` plus a `$(conf.params.api_key)` interpolation. Both
+fields are referenceable, so the vault reference resolves either way — verified
+against a live tenant — but `request.auth.value` is also stored encrypted, and
+the credential no longer appears in the `conf` table that guardrail functions
+receive. The key never transits the SaaS control plane and never appears in
+version control.
 
 **Streaming, and what to do about it.** Response scanning is not merely
 "incompatible" with SSE — it is skipped, silently, as measured above. Two
@@ -350,21 +364,41 @@ instance uniqueness and route-over-service precedence behind the two-policy
 design are documented on Kong's plugin entity page and in the `kong` GitHub
 repository — see [docs/sources.md](docs/sources.md).
 
-What remains `SYNTHESIZED`, still to be confirmed:
+A second round on the same gateway settled the rest:
 
-- what the plugin does when a function raises an error — this repository assumes
-  it falls under `stop_on_error` and blocks;
-- whether `metrics.*` fields accept an expression template the way
-  `response.block` does — the schema does not say so explicitly for `metrics`,
-  and the lab run did not read the emitted metrics back;
+- **`request.auth` works, and is now what this repository ships.** With
+  `location: header`, `name: x-pan-token` and a `{vault://env/airs-token}`
+  value, the credential reaches the guardrail service and the five-case suite
+  passes. It replaces `params.api_key` + `$(conf.params.api_key)`.
+- **A guardrail function that raises fails the request closed**, with HTTP 500
+  and the Lua error text in the body. That is independent of `stop_on_error`,
+  which covers the HTTP call rather than the templating. Note the error text is
+  client-visible, so a `error()` message must not carry anything sensitive.
+- **Only `source`, `content` and `conf` are injectable.** Every other parameter
+  name — `consumer`, `model`, `route`, `service`, `request`, `headers`, `ctx`,
+  `kong`, `metadata`, `plugin` — is rejected with *argument '<name>' is not
+  allowed in guardrail functions*, and `resp` is accepted but empty on the
+  request side. There is therefore **no way to reach the Kong consumer identity
+  or the model name from a guardrail function**, so enriching the Prisma AIRS
+  `metadata` object with request context is not possible with configuration
+  alone.
+- **Two guardrail policies can be attached to one AI Model in 2.x** — the API
+  accepts it — but only one executes, and not the one declaration order would
+  suggest. Attach exactly one. On the deck side the second instance is rejected
+  at apply time instead.
+- **`require` and `cjson.safe.decode` work inside a guardrail function**, which
+  is why the string-decoding branch of the verdict is kept rather than deleted
+  as dead code: it is real cover if a Kong release ever passes `$(resp)` as a
+  string, and without it that release would fail every request closed.
+
+What remains unconfirmed:
+
+- whether `metrics.*` templates are rendered and exported anywhere. The fields
+  apply and traffic flows, but nothing guardrail-related appears on the data
+  plane's metrics endpoint. Checking Konnect's AI analytics view is the
+  remaining step;
 - the `response_buffer_size: 65536` value, a starting point rather than a
   measured figure, and one that only applies to buffered responses.
-
-`request.auth` (location `body` \| `header` \| `query`, `name`, `value`; `value`
-is referenceable and encrypted) is a documented alternative to the
-`params` + `$(conf.params.api_key)` header pattern used here; both published
-examples use the pattern this repository follows, so `request.auth` is left
-untested rather than switched to speculatively.
 
 Validate in a non-production environment before this reaches production traffic.
 

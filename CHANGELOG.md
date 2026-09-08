@@ -8,6 +8,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Nothing yet.
 
+## [0.3.0] — 2026-09-08
+
+Second lab round on the same gateway, closing every question the first one left
+open. One configuration change follows from it.
+
+### Changed
+
+- **The Prisma AIRS credential moves to `request.auth`.** `location: header`,
+  `name: x-pan-token`, `value: "{vault://env/airs-token}"`, replacing
+  `params.api_key` plus a `$(conf.params.api_key)` interpolation. Verified
+  against a live tenant: `scripts/test-airs.sh` passes 5 of 5. Two reasons this
+  is not cosmetic — `request.auth.value` is stored encrypted, which a
+  `config.params` value is not, and the key disappears from the `conf` table
+  that guardrail functions receive.
+- README and `docs/deployment-guide.md`: attaching two `ai-custom-guardrail`
+  policies to one AI Model is **accepted** by AI Gateway 2.x, contrary to what
+  this repository stated. Coverage does not stack — only one executes — and it
+  is not the one declaration order suggests: with both attached, the `INPUT`
+  policy ran while the model listed `airs-scan` first. The deck side still
+  rejects the second instance at apply time. Attach exactly one, and verify with
+  `GET /v1/ai-gateways/<id>/models`.
+- README and `docs/deployment-guide.md`: the guardrail's `metrics.*` fields are
+  no longer presented as a reliable record. They apply, but nothing
+  guardrail-related appears on the data plane's metrics endpoint, including with
+  a `prometheus` policy and `ai_metrics: true`, whose AI families are LLM
+  request, cost and token counters. The Prisma AIRS scan log in Strata Cloud
+  Manager, correlated by `scan_id`, is the channel to rely on.
+- The comment above the verdict's string-decoding branch now explains why it is
+  kept rather than deleted as dead code: `require` and `cjson.safe.decode` were
+  verified to work inside a guardrail function, so the branch is live cover if a
+  Kong release ever passes `$(resp)` as a string — and without it, such a
+  release would fail every request closed.
+
+### Added
+
+- README, Verification status: the injectable parameter set. Only `source`,
+  `content` and `conf` are accepted in a guardrail function; `resp` is accepted
+  but empty on the request side; every other name tried is rejected with
+  *argument '<name>' is not allowed in guardrail functions*. Consequence for
+  anyone planning to enrich the Prisma AIRS `metadata` object: the Kong consumer
+  identity and the model name are unreachable from configuration alone.
+- README, Verification status: a guardrail function that raises fails the
+  request closed with HTTP 500, independently of `stop_on_error` — and its Lua
+  error text reaches the client, so an `error()` message must not carry anything
+  sensitive.
+
 ## [0.2.0] — 2026-09-08
 
 **First live-gateway run, 2026-09-08.** Konnect AI Gateway 2.x control plane,
