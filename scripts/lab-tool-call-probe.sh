@@ -110,7 +110,7 @@ echo "  markers IN the scanned text      → that position IS scanned"
 echo "  markers elsewhere, NOT scanned   → that position is NOT scanned"
 echo
 echo "Repeat with text_source set to last_message, concatenate_user_content"
-echo "and concatenate_all_content. Record each result in CLAUDE.local.md Q3,"
+echo "and concatenate_all_content. Record each result in the working notes,"
 echo "then state the outcome in the README under Scope and limits."
 
 if [ "$code" != "200" ]; then

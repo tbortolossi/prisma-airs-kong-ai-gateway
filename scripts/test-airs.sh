@@ -8,8 +8,15 @@
 #   ./scripts/test-airs.sh
 #
 # Cases 1 and 5 must be allowed. Cases 2 to 4 must be rejected with a Prisma
-# AIRS block reason. Correlate each scan_id with the scan logs in Strata Cloud
-# Manager.
+# AIRS block reason.
+#
+# Message contract: a block response carries the generic message "Blocked by
+# Prisma AIRS", optionally followed by " [scan_id=...]". It carries no
+# detection names any more - those live in Strata Cloud Manager (per scan_id)
+# and in Kong's own metrics (block_reason / block_detail), not in the client
+# response. A case is only accepted as a guardrail block if its body contains
+# the "Prisma AIRS" marker; a bare non-200 is treated as a probable auth or
+# proxy error instead, since it says nothing about which layer rejected it.
 #
 # Needs a live gateway. For the offline checks, see ./scripts/run-lua-tests.sh.
 # =============================================================================
@@ -22,9 +29,20 @@ KEY="${CLIENT_KEY:?CLIENT_KEY is not set}"
 MODEL="${MODEL_NAME:-gpt-4o}"
 
 BODY_FILE="$(mktemp)"
-trap 'rm -f "$BODY_FILE"' EXIT
+AUTH_CFG="$(mktemp)"
+chmod 600 "$AUTH_CFG"
+trap 'rm -f "$BODY_FILE" "$AUTH_CFG"' EXIT
+
+# Keep the credential out of the process list: curl reads it from a config
+# file rather than from an -H argument on the command line.
+# curl's config parser treats a double quote as the end of the value and
+# strips backslashes, so both must be escaped or the key is silently truncated.
+esc_key="${KEY//\\/\\\\}"
+esc_key="${esc_key//\"/\\\"}"
+printf 'header = "Authorization: Bearer %s"\n' "$esc_key" > "$AUTH_CFG"
 
 unexpected=0
+blocked_codes=""
 
 # call <expect: allow|block> <label> <json-encoded prompt>
 call() {
@@ -35,8 +53,8 @@ call() {
 
   local code
   code="$(curl -s -o "$BODY_FILE" -w '%{http_code}' \
+    -K "$AUTH_CFG" \
     -X POST "${PROXY}/v1/chat/completions" \
-    -H "Authorization: Bearer ${KEY}" \
     -H "Content-Type: application/json" \
     --data @- <<JSON
 {
@@ -46,17 +64,31 @@ call() {
 JSON
   )"
 
-  local verdict
-  if [ "$code" = "200" ]; then verdict="allow"; else verdict="block"; fi
+  local body
+  body="$(cat "$BODY_FILE")"
 
-  if [ "$verdict" = "$expect" ]; then
-    echo "  PASS  HTTP ${code}  (expected ${expect})"
+  if [ "$expect" = "allow" ]; then
+    if [ "$code" = "200" ]; then
+      echo "  PASS  HTTP ${code}  (allowed as expected)"
+    else
+      echo "  FAIL  HTTP ${code}  (expected allow, i.e. HTTP 200)"
+      unexpected=$((unexpected + 1))
+    fi
   else
-    echo "  FAIL  HTTP ${code}  (expected ${expect}, got ${verdict})"
-    unexpected=$((unexpected + 1))
+    if [ "$code" != "200" ] && printf '%s' "$body" | grep -q "Prisma AIRS"; then
+      echo "  PASS  HTTP ${code}  (blocked by Prisma AIRS as expected)"
+      blocked_codes="${blocked_codes} ${code}"
+    elif [ "$code" != "200" ]; then
+      echo "  FAIL  HTTP ${code}  (non-200, but body has no Prisma AIRS marker:"
+      echo "        this looks like an auth or proxy error, not a guardrail verdict)"
+      unexpected=$((unexpected + 1))
+    else
+      echo "  FAIL  HTTP ${code}  (expected a Prisma AIRS block, got 200)"
+      unexpected=$((unexpected + 1))
+    fi
   fi
 
-  echo "  → $(head -c 400 "$BODY_FILE")"
+  echo "  → $(printf '%s' "$body" | head -c 400)"
   echo
 }
 
@@ -86,6 +118,15 @@ if [ "$unexpected" -eq 0 ]; then
   echo "All 5 cases matched the expected verdict."
 else
   echo "${unexpected} case(s) did not match the expected verdict."
+fi
+
+echo
+if [ -n "${blocked_codes// /}" ]; then
+  distinct_codes="$(printf '%s' "$blocked_codes" | tr ' ' '\n' | sort -un | tr '\n' ' ')"
+  echo "Distinct non-200 codes observed on blocked cases: ${distinct_codes}"
+  echo "(this is the block status code to document as the client contract once stable)"
+else
+  echo "No non-200 code observed on any blocked case."
 fi
 
 echo
