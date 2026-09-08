@@ -1,0 +1,13 @@
+{
+  // kongctl extends YAML with its own tags. A generic YAML parser reports them
+  // as "Unresolved tag"; kongctl resolves them at apply time. Declaring them
+  // here silences the false errors without changing what is applied.
+  // https://developer.konghq.com/kongctl/declarative/
+  "yaml.customTags": [
+    "!lookup mapping",
+    "!external mapping",
+    "!ref scalar",
+    "!env scalar",
+    "!file scalar"
+  ]
+}
