@@ -5,11 +5,25 @@
 # Tool  : deck gateway sync config/deck/airs-guardrail.yaml
 # Needs : Kong Gateway 3.14+ with an AI licence (ai-custom-guardrail)
 #
-# Functional equivalent of config/kongctl/airs-guardrail.yaml. The config block
-# is identical; only the wrapper differs. Any change to the guardrail logic must
-# be applied to both files in the same commit.
+# Functional equivalent of config/kongctl/airs-guardrail.yaml. The config
+# blocks are identical; only the wrapper differs. Any change to the guardrail
+# logic must be applied to both files in the same commit.
 #
-# VERIFICATION STATUS: see the header of config/kongctl/airs-guardrail.yaml.
+# Two instances of ai-custom-guardrail, differing by coverage:
+#
+#   airs-scan         guarding_mode: BOTH   service level, the default
+#   airs-prompt-scan  guarding_mode: INPUT  route level, streaming route only
+#
+# Why one per scope and not two on the same scope: Kong keys a plugin instance
+# on {name, route, service, consumer} and that key is unique, so a second
+# ai-custom-guardrail on the same Service is rejected at apply time. Kong also
+# runs a single instance of a given plugin per request, and a route-level
+# instance overrides the service-level one for that route. That precedence is
+# what applies the INPUT-only variant on the streaming route below while the
+# rest of the service keeps prompt-and-response coverage.
+#
+# VERIFICATION STATUS: see the header of config/kongctl/airs-guardrail.yaml
+# and README.md, "Verification status".
 # =============================================================================
 
 _format_version: "3.0"
@@ -17,11 +31,6 @@ _format_version: "3.0"
 services:
   - name: llm-openai
     url: https://api.openai.com
-    routes:
-      - name: llm-chat-completions
-        paths:
-          - /v1/chat/completions
-        strip_path: false
 
     plugins:
       # -----------------------------------------------------------------------
@@ -41,16 +50,19 @@ services:
                 name: gpt-4o
 
       # -----------------------------------------------------------------------
-      # 2. Prompt scan: client -> LLM
+      # 2. airs-scan: prompt and response, service level.
+      #    Scans the prompt before it reaches the model and the model output
+      #    before it reaches the client. Response scanning buffers the upstream
+      #    body in chunks of response_buffer_size. Routes that serve streaming
+      #    responses carry airs-prompt-scan instead (route 2 below).
       # -----------------------------------------------------------------------
       - name: ai-custom-guardrail
-        instance_name: airs-prompt-scan
+        instance_name: airs-scan
         config:
-          # INPUT inspects the request. The enum is BOTH | INPUT | OUTPUT.
-          # BOTH is not used here: Prisma AIRS keys prompts and responses
-          # differently (contents[].prompt vs contents[].response), so each
-          # direction needs its own request body.
-          guarding_mode: INPUT
+          # The enum is BOTH | INPUT | OUTPUT. Prisma AIRS keys prompts and
+          # responses differently (contents[].prompt vs contents[].response);
+          # airs_contents below picks the key from $(source).
+          guarding_mode: BOTH
           text_source: concatenate_all_content
 
           # Schema defaults are timeout 10000 and stop_on_error true. Both are
@@ -62,6 +74,15 @@ services:
           ssl_verify: true
           stop_on_error: true
 
+          # SYNTHESIZED value. The schema default is 100 and describes the
+          # field as "the amount of bytes receiving from upstream to be
+          # buffered before sending to the guardrail service", response guard
+          # only. At 100 bytes a response would trigger many AIRS calls, each
+          # on a fragment without context, with part of the response already
+          # delivered before a block. 65536 keeps a typical completion in a
+          # single scan. Tune in lab.
+          response_buffer_size: 65536
+
           params:
             api_key: "{vault://env/airs-token}"
             profile: "kong-airs-prod"
@@ -69,6 +90,11 @@ services:
 
           request:
             url: https://service.api.aisecurity.paloaltonetworks.com/v1/scan/sync/request
+            # The token travels in x-pan-token through $(conf.params.api_key),
+            # the pattern both published examples use. The schema also offers
+            # request.auth (location: body | header | query, name, value; value
+            # is referenceable and encrypted) as a dedicated slot. Untested
+            # here.
             headers:
               x-pan-token: "$(conf.params.api_key)"
               Content-Type: "application/json"
@@ -79,11 +105,20 @@ services:
             body:
               ai_profile: "$(airs_profile)"
               metadata: "$(airs_metadata)"
-              contents: "$(airs_contents(content))"
+              contents: "$(airs_contents)"
 
           response:
             block: "$(airs_verdict.block)"
             block_message: "$(airs_verdict.block_message)"
+
+          # SYNTHESIZED: metrics.* is a string field in the schema; that it
+          # accepts an expression template is inferred from response.block, not
+          # stated for metrics. This is the channel that keeps the category and
+          # the detection names out of the client response and in the
+          # gateway's own telemetry.
+          metrics:
+            block_reason: "$(airs_verdict.block_message)"
+            block_detail: "$(airs_verdict.detail)"
 
           functions:
             airs_profile: |
@@ -96,98 +131,37 @@ services:
                 return { app_name = conf.params.app_name }
               end
 
+            # Builds contents[] from the phase. The reference is bare: the
+            # plugin injects source and content by parameter name.
+            # LAB-VERIFIED 2026-09-08. Remaining SYNTHESIZED point:
+            # and what the plugin does when a function raises (assumed to fall
+            # under stop_on_error). Both are lab questions.
+            # The type guard is mandatory. If Kong does not honour the explicit
+            # arguments, the documented implicit signature applies:
+            # function(conf) on the request side, function(resp, conf) on the
+            # response side. A permissive fallback such as `content or ""`
+            # would then JSON-encode the conf table, api_key included after
+            # vault resolution, into contents[].prompt and ship it to Prisma
+            # AIRS and its scan logs.
             airs_contents: |
-              return function(content)
-                return { { prompt = content or "" } }
+              return function(source, content)
+                if type(content) ~= "string" then
+                  error("airs_contents: content is not a string; refusing to build the scan payload")
+                end
+                if source == "INPUT" then return { { prompt = content } } end
+                if source == "OUTPUT" then return { { response = content } } end
+                error("airs_contents: unknown phase " .. tostring(source))
               end
 
+            # Maps the AIRS ScanResponse to Kong's block decision. The client
+            # only ever sees "Blocked by Prisma AIRS" plus the scan_id; the
+            # category and the detection names go to `detail`, wired to
+            # metrics.block_detail above. Naming the detection to the caller is
+            # an evasion oracle, and Palo Alto's own reference integration
+            # returns a generic body.
             airs_verdict: |
               return function(resp)
-                -- Fail closed: without a verdict, no decision can be trusted.
-                if type(resp) ~= "table" or type(resp.action) ~= "string" then
-                  return { block = true,
-                           block_message = "Request blocked: Prisma AIRS verdict unavailable (fail-closed)" }
-                end
-
-                -- AIRS reports its own degradation through category, not action.
-                if resp.category == "error" or resp.category == "timeout" then
-                  return { block = true,
-                           block_message = "Request blocked: Prisma AIRS scan " .. resp.category .. " (fail-closed)" }
-                end
-
-                if resp.action ~= "block" then
-                  return { block = false, block_message = "Prisma AIRS scan passed" }
-                end
-
-                local hits = {}
-                for k, v in pairs(resp.prompt_detected or {}) do
-                  if v == true then hits[#hits + 1] = k end
-                end
-
-                local msg = "Request blocked by Prisma AIRS (" .. tostring(resp.category or "unknown") .. ")"
-                if #hits > 0 then msg = msg .. ": " .. table.concat(hits, ", ") end
-                if resp.scan_id then msg = msg .. " [scan_id=" .. tostring(resp.scan_id) .. "]" end
-
-                return { block = true, block_message = msg }
-              end
-
-      # -----------------------------------------------------------------------
-      # 3. Response scan: LLM -> client
-      #    Buffers the response before evaluating it. Remove this instance from
-      #    routes that serve SSE streaming.
-      # -----------------------------------------------------------------------
-      - name: ai-custom-guardrail
-        instance_name: airs-response-scan
-        config:
-          guarding_mode: OUTPUT
-          text_source: concatenate_all_content
-
-          timeout: 5000
-          ssl_verify: true
-          stop_on_error: true
-
-          params:
-            api_key: "{vault://env/airs-token}"
-            profile: "kong-airs-prod"
-            app_name: "kong-ai-gateway"
-
-          request:
-            url: https://service.api.aisecurity.paloaltonetworks.com/v1/scan/sync/request
-            headers:
-              x-pan-token: "$(conf.params.api_key)"
-              Content-Type: "application/json"
-              Accept: "application/json"
-            body:
-              ai_profile: "$(airs_profile)"
-              metadata: "$(airs_metadata)"
-              contents: "$(airs_contents(content))"
-
-          response:
-            block: "$(airs_verdict.block)"
-            block_message: "$(airs_verdict.block_message)"
-
-          functions:
-            airs_profile: |
-              return function(conf)
-                return { profile_name = conf.params.profile }
-              end
-
-            airs_metadata: |
-              return function(conf)
-                return { app_name = conf.params.app_name }
-              end
-
-            # AIRS accepts a response-only content object. The originating
-            # prompt is not reachable from the OUTPUT phase, where $(content) is
-            # the model output, so this scan carries no prompt context.
-            airs_contents: |
-              return function(content)
-                return { { response = content or "" } }
-              end
-
-            airs_verdict: |
-              return function(resp)
-                -- Kong documents $(resp) as a string in the OUTPUT phase.
+                -- Kong documents $(resp) as a table in INPUT and a string in OUTPUT.
                 -- Decode defensively; an undecodable verdict blocks.
                 if type(resp) == "string" then
                   local ok, decoded = pcall(function()
@@ -195,29 +169,159 @@ services:
                   end)
                   resp = ok and decoded or nil
                 end
-
+                -- Fail closed: without a verdict, no decision can be trusted.
                 if type(resp) ~= "table" or type(resp.action) ~= "string" then
-                  return { block = true,
-                           block_message = "Response blocked: Prisma AIRS verdict unavailable (fail-closed)" }
+                  return { block = true, block_message = "Blocked by Prisma AIRS",
+                           detail = "verdict unavailable (fail-closed)" }
                 end
-
-                if resp.category == "error" or resp.category == "timeout" then
-                  return { block = true,
-                           block_message = "Response blocked: Prisma AIRS scan " .. resp.category .. " (fail-closed)" }
-                end
-
-                if resp.action ~= "block" then
-                  return { block = false, block_message = "Prisma AIRS scan passed" }
-                end
-
-                local hits = {}
-                for k, v in pairs(resp.response_detected or {}) do
-                  if v == true then hits[#hits + 1] = k end
-                end
-
-                local msg = "Response blocked by Prisma AIRS (" .. tostring(resp.category or "unknown") .. ")"
-                if #hits > 0 then msg = msg .. ": " .. table.concat(hits, ", ") end
+                local msg = "Blocked by Prisma AIRS"
                 if resp.scan_id then msg = msg .. " [scan_id=" .. tostring(resp.scan_id) .. "]" end
-
-                return { block = true, block_message = msg }
+                -- AIRS reports its own degradation through category, with action=allow.
+                if resp.category == "error" or resp.category == "timeout" then
+                  return { block = true, block_message = msg,
+                           detail = "scan " .. resp.category .. " (fail-closed)" }
+                end
+                if resp.action == "allow" then
+                  return { block = false, block_message = "", detail = "" }
+                end
+                -- Category and detection names go to detail, never to the client.
+                local hits = {}
+                for _, key in ipairs({ "prompt_detected", "response_detected" }) do
+                  if type(resp[key]) == "table" then
+                    for name, fired in pairs(resp[key]) do
+                      if fired == true then hits[#hits + 1] = tostring(name) end
+                    end
+                  end
+                end
+                table.sort(hits)
+                local detail = resp.action == "block" and tostring(resp.category or "unknown")
+                  or ("unexpected action " .. resp.action)
+                if #hits > 0 then detail = detail .. ": " .. table.concat(hits, ", ") end
+                return { block = true, block_message = msg, detail = detail }
               end
+
+    routes:
+      # -----------------------------------------------------------------------
+      # Route 1: non-streaming completions. Inherits the service-level plugins:
+      # ai-proxy-advanced, then airs-scan.
+      # -----------------------------------------------------------------------
+      - name: llm-chat-completions
+        paths:
+          - /v1/chat/completions
+        strip_path: false
+
+      # -----------------------------------------------------------------------
+      # Route 2: streaming completions. Same service, same ai-proxy-advanced
+      # (route_type llm/v1/chat sets the provider endpoint itself, so the
+      # client-facing path is a naming choice). Carries airs-prompt-scan at
+      # ROUTE level: a route-level instance of a plugin overrides the
+      # service-level instance of the same plugin for that route, so requests
+      # on this path get the INPUT-only variant and the model output is not
+      # buffered. The model output is not scanned on this route.
+      # -----------------------------------------------------------------------
+      - name: llm-chat-completions-streaming
+        paths:
+          - /stream/v1/chat/completions
+        strip_path: false
+        plugins:
+          - name: ai-custom-guardrail
+            instance_name: airs-prompt-scan
+            config:
+              guarding_mode: INPUT
+              text_source: concatenate_all_content
+
+              timeout: 5000
+              ssl_verify: true
+              stop_on_error: true
+
+              # Not used with guarding_mode INPUT (response guard only). Kept
+              # so the two config blocks differ by guarding_mode alone.
+              response_buffer_size: 65536
+
+              params:
+                api_key: "{vault://env/airs-token}"
+                profile: "kong-airs-prod"
+                app_name: "kong-ai-gateway"
+
+              request:
+                url: https://service.api.aisecurity.paloaltonetworks.com/v1/scan/sync/request
+                headers:
+                  x-pan-token: "$(conf.params.api_key)"
+                  Content-Type: "application/json"
+                  Accept: "application/json"
+                body:
+                  ai_profile: "$(airs_profile)"
+                  metadata: "$(airs_metadata)"
+                  contents: "$(airs_contents)"
+
+              response:
+                block: "$(airs_verdict.block)"
+                block_message: "$(airs_verdict.block_message)"
+
+              metrics:
+                block_reason: "$(airs_verdict.block_message)"
+                block_detail: "$(airs_verdict.detail)"
+
+              # Byte-identical to the functions of airs-scan.
+              # scripts/run-lua-tests.sh fails the build if any copy drifts.
+              functions:
+                airs_profile: |
+                  return function(conf)
+                    return { profile_name = conf.params.profile }
+                  end
+
+                airs_metadata: |
+                  return function(conf)
+                    return { app_name = conf.params.app_name }
+                  end
+
+                airs_contents: |
+                  return function(source, content)
+                    if type(content) ~= "string" then
+                      error("airs_contents: content is not a string; refusing to build the scan payload")
+                    end
+                    if source == "INPUT" then return { { prompt = content } } end
+                    if source == "OUTPUT" then return { { response = content } } end
+                    error("airs_contents: unknown phase " .. tostring(source))
+                  end
+
+                airs_verdict: |
+                  return function(resp)
+                    -- Kong documents $(resp) as a table in INPUT and a string in OUTPUT.
+                    -- Decode defensively; an undecodable verdict blocks.
+                    if type(resp) == "string" then
+                      local ok, decoded = pcall(function()
+                        return require("cjson.safe").decode(resp)
+                      end)
+                      resp = ok and decoded or nil
+                    end
+                    -- Fail closed: without a verdict, no decision can be trusted.
+                    if type(resp) ~= "table" or type(resp.action) ~= "string" then
+                      return { block = true, block_message = "Blocked by Prisma AIRS",
+                               detail = "verdict unavailable (fail-closed)" }
+                    end
+                    local msg = "Blocked by Prisma AIRS"
+                    if resp.scan_id then msg = msg .. " [scan_id=" .. tostring(resp.scan_id) .. "]" end
+                    -- AIRS reports its own degradation through category, with action=allow.
+                    if resp.category == "error" or resp.category == "timeout" then
+                      return { block = true, block_message = msg,
+                               detail = "scan " .. resp.category .. " (fail-closed)" }
+                    end
+                    if resp.action == "allow" then
+                      return { block = false, block_message = "", detail = "" }
+                    end
+                    -- Category and detection names go to detail, never to the client.
+                    local hits = {}
+                    for _, key in ipairs({ "prompt_detected", "response_detected" }) do
+                      if type(resp[key]) == "table" then
+                        for name, fired in pairs(resp[key]) do
+                          if fired == true then hits[#hits + 1] = tostring(name) end
+                        end
+                      end
+                    end
+                    table.sort(hits)
+                    local detail = resp.action == "block" and tostring(resp.category or "unknown")
+                      or ("unexpected action " .. resp.action)
+                    if #hits > 0 then detail = detail .. ": " .. table.concat(hits, ", ") end
+                    return { block = true, block_message = msg, detail = detail }
+                  end

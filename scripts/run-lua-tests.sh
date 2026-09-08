@@ -1,12 +1,18 @@
 #!/usr/bin/env bash
 # =============================================================================
-# Run the verdict function tests against the Lua actually shipped in the YAML.
+# Run the guardrail function tests against the Lua actually shipped in the YAML.
 #
 #   ./scripts/run-lua-tests.sh
 #
-# Extracts the airs_verdict function from both policies in
+# Extracts every airs_verdict and airs_contents block from
 # config/kongctl/airs-guardrail.yaml, checks that config/deck/airs-guardrail.yaml
-# carries the same Lua, and runs scripts/test-verdict-functions.lua against it.
+# carries the same Lua copy for copy, checks that the copies inside a file do
+# not drift from each other, then runs scripts/test-verdict-functions.lua with
+# these globals injected:
+#
+#   scan_verdict    airs_verdict  from airs-scan        (copy 1)
+#   prompt_verdict  airs_verdict  from airs-prompt-scan (copy 2)
+#   airs_contents   airs_contents from airs-scan        (copy 1)
 #
 # Needs luajit, or lua, or Docker. Kong runs LuaJIT, so luajit is preferred.
 # No network access and no gateway required.
@@ -22,14 +28,20 @@ TESTS="scripts/test-verdict-functions.lua"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
-# Extract the Nth "airs_verdict: |" block from a YAML file and dedent it.
+# Count the "<key>: |" block scalars in a YAML file.
+count_blocks() {
+  local file="$1" key="$2"
+  grep -cE "^[ ]*${key}: \|[ ]*$" "$file"
+}
+
+# Extract the Nth "<key>: |" block from a YAML file and dedent it.
 # Block-scalar extraction only: everything more indented than the key belongs
 # to the block, and the first line that is not blank and not more indented ends
 # it. That is the whole of the YAML block-scalar rule this needs.
-extract_verdict() {
-  local file="$1" occurrence="$2"
-  awk -v want="$occurrence" '
-    /airs_verdict: \|/ {
+extract_block() {
+  local file="$1" key="$2" occurrence="$3"
+  awk -v want="$occurrence" -v key="$key" '
+    $0 ~ ("^[ ]*" key ": \\|[ ]*$") {
       seen++
       if (seen == want) {
         match($0, /^[ ]*/)
@@ -54,31 +66,55 @@ extract_verdict() {
          { while (blanks-- > 0) print ""; blanks = 0; print }'
 }
 
-for direction in 1 2; do
-  extract_verdict "$KONGCTL_YAML" "$direction" > "$WORK/kongctl.$direction.lua"
-  extract_verdict "$DECK_YAML"    "$direction" > "$WORK/deck.$direction.lua"
+for key in airs_verdict airs_contents; do
+  kongctl_count="$(count_blocks "$KONGCTL_YAML" "$key")"
+  deck_count="$(count_blocks "$DECK_YAML" "$key")"
 
-  if [ ! -s "$WORK/kongctl.$direction.lua" ]; then
-    echo "FAIL: could not extract airs_verdict #$direction from $KONGCTL_YAML" >&2
+  if [ "$kongctl_count" -lt 2 ]; then
+    echo "FAIL: expected at least two $key blocks in $KONGCTL_YAML, found $kongctl_count" >&2
+    exit 1
+  fi
+  if [ "$kongctl_count" -ne "$deck_count" ]; then
+    echo "FAIL: $key appears $kongctl_count times in kongctl and $deck_count times in deck" >&2
     exit 1
   fi
 
-  # Rule from CLAUDE.md: guardrail logic changes land in both files together.
-  if ! diff -q "$WORK/kongctl.$direction.lua" "$WORK/deck.$direction.lua" >/dev/null; then
-    echo "FAIL: airs_verdict #$direction differs between kongctl and deck configs" >&2
-    diff -u "$WORK/deck.$direction.lua" "$WORK/kongctl.$direction.lua" >&2
-    exit 1
-  fi
+  for ((i = 1; i <= kongctl_count; i++)); do
+    extract_block "$KONGCTL_YAML" "$key" "$i" > "$WORK/kongctl.$key.$i.lua"
+    extract_block "$DECK_YAML"    "$key" "$i" > "$WORK/deck.$key.$i.lua"
+
+    if [ ! -s "$WORK/kongctl.$key.$i.lua" ]; then
+      echo "FAIL: could not extract $key #$i from $KONGCTL_YAML" >&2
+      exit 1
+    fi
+
+    # Rule from CLAUDE.md: guardrail logic changes land in both files together.
+    if ! diff -q "$WORK/kongctl.$key.$i.lua" "$WORK/deck.$key.$i.lua" >/dev/null; then
+      echo "FAIL: $key #$i differs between kongctl and deck configs" >&2
+      diff -u "$WORK/deck.$key.$i.lua" "$WORK/kongctl.$key.$i.lua" >&2
+      exit 1
+    fi
+
+    # The two policies differ by guarding_mode alone; their Lua is one copy.
+    if ! diff -q "$WORK/kongctl.$key.1.lua" "$WORK/kongctl.$key.$i.lua" >/dev/null; then
+      echo "FAIL: $key #$i differs from $key #1 inside $KONGCTL_YAML" >&2
+      diff -u "$WORK/kongctl.$key.1.lua" "$WORK/kongctl.$key.$i.lua" >&2
+      exit 1
+    fi
+  done
+
+  echo "ok - kongctl and deck configs carry identical $key functions ($kongctl_count copies)"
 done
 
-echo "ok - kongctl and deck configs carry identical verdict functions"
-
 {
-  echo "prompt_verdict = (function()"
-  cat "$WORK/kongctl.1.lua"
+  echo "scan_verdict = (function()"
+  cat "$WORK/kongctl.airs_verdict.1.lua"
   echo "end)()"
-  echo "response_verdict = (function()"
-  cat "$WORK/kongctl.2.lua"
+  echo "prompt_verdict = (function()"
+  cat "$WORK/kongctl.airs_verdict.2.lua"
+  echo "end)()"
+  echo "airs_contents = (function()"
+  cat "$WORK/kongctl.airs_contents.1.lua"
   echo "end)()"
   cat "$TESTS"
 } > "$WORK/suite.lua"
