@@ -33,3 +33,6 @@ Thumbs.db
 .vscode/*
 !.vscode/settings.json
 *.swp
+
+# ---- Local lab, not published until it has proved something ----
+lab/

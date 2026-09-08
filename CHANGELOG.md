@@ -6,6 +6,64 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+Nothing yet.
+
+## [0.2.0] — 2026-09-08
+
+**First live-gateway run, 2026-09-08.** Konnect AI Gateway 2.x control plane,
+one self-managed data plane (`kong/kong-ai-gateway:2.0.3`, Kong Gateway
+3.14.0.3-enterprise), a local Ollama as the model, a live Prisma AIRS tenant.
+`scripts/test-airs.sh`: 5 of 5 cases matched. Six previously unverified
+statements are now measured, and one of them was a defect that made the shipped
+configuration unusable.
+
+### Fixed
+
+- **The guardrail never ran.** `request.body.contents` referenced its function as
+  `$(airs_contents(source, content))`. That form is not valid: the data plane
+  answers HTTP 500, *failed to render by function: invalid expression syntax*,
+  and no request reaches the model. Functions must be referenced bare, `$(fn)`;
+  the plugin injects the built-ins **by parameter name**, rejecting any other
+  name with *argument 'a' is not allowed in guardrail functions*. The function
+  signatures were already correct, so the fix is the reference itself, applied to
+  both `config/kongctl/` and `config/deck/`.
+
+### Changed
+
+- README and `docs/deployment-guide.md`: **streaming does not degrade response
+  scanning, it removes it.** With `stream: true` the `OUTPUT` phase is never
+  invoked — a guardrail service answering `action: block` for everything received
+  no call at all, and the complete SSE stream reached the client with HTTP 200,
+  while the same policy blocked the non-streamed request with 400. No error is
+  raised, so a client opts itself out of response scanning by setting one flag.
+  The previous text, which inferred chunked buffering from `response_buffer_size`,
+  is withdrawn.
+- README: tool calls on the LLM path are no longer "not confirmed". `$(content)`
+  carries message content only, joined by `\n\n` in reverse chronological order.
+  Tool definitions and generated tool-call arguments are never scanned, under any
+  `text_source`; `role: "tool"` results are, under `concatenate_all_content`.
+- README and `docs/deployment-guide.md`: a block returns **HTTP 400** with the
+  body `{"error":{"message":"..."}}`. That is now stated as the client contract.
+- README and `docs/deployment-guide.md`: measured latency replaces the previous
+  qualitative warning. Median end to end, EU data plane against the global AIRS
+  endpoint, upstream model answering in ~30 ms: 73 ms with no policy, 577 ms with
+  `airs-prompt-scan` (one scan), 876 ms with `airs-scan` (two sequential scans).
+  The plugin itself costs about 3 ms; the rest is the round trip to Prisma AIRS,
+  which makes a regional endpoint the main latency lever.
+- README, Verification status: `$(resp)` is a Lua table in both phases, `OUTPUT`
+  included, so the defensive `cjson.safe` decode is dead code. Left in place for
+  now, because removing it also means rewriting the assertions that cover it.
+
+**Breaking change to policy names and layout.** The two-policies-by-direction
+layout (one `INPUT` policy plus one `OUTPUT` policy attached together to the
+same model) is gone. `airs-response-scan` no longer exists. `airs-prompt-scan`
+keeps its name but is now the `INPUT`-only variant meant specifically for
+streaming models, attached alone. A new policy, `airs-scan`
+(`guarding_mode: BOTH`), covers prompt and response together and is the default
+choice for non-streaming models. Exactly one of `airs-scan` /
+`airs-prompt-scan` is attached per AI Model (kongctl) or per scope (deck) — see
+Fixed, below, for why attaching two no longer works and never reliably did.
+
 ### Added
 
 - README: a **Scope and limits** section. MCP traffic is out of scope, with the
@@ -16,7 +74,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Intercept already scans MCP through `contents[].tool_event`.
 - README: tool calls on the LLM path are declared unconfirmed rather than
   implied. Whether `$(content)` carries `tools[]`, `tool_calls[].function.arguments`
-  and `role: "tool"` results is now a third item under Verification status.
+  and `role: "tool"` results is now an item under Verification status.
 - `docs/sources.md`: the AI MCP Proxy plugin and AI MCP Server entity pages as
   the source of the scope boundary, and the Prisma AIRS MCP threat detection and
   MCP Server pages.
@@ -28,6 +86,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   — reached the scanned text. Standard library only, no dependency to install.
   The same run also exposes the emitted `contents` object, so it can confirm the
   explicit-argument call form and the HTTP status returned on a block.
+- `airs-scan` policy (`guarding_mode: BOTH`): scans the prompt in its `INPUT`
+  phase and the model output in its `OUTPUT` phase from a single policy, using
+  `$(source)` to pick `contents[].prompt` versus `contents[].response`.
+- `scripts/check-plugin-schema.py`, run in CI: `--parity` fails the build if
+  `config/kongctl/airs-guardrail.yaml` and `config/deck/airs-guardrail.yaml`
+  carry a different `config` block for a given guardrail instance; `--schema`
+  fails the build if any config key, or any enum value, is not present in the
+  live published `ai-custom-guardrail` schema.
+- 38 more offline assertions (55 total, up from 17): the verdict cases now run
+  against both `airs-scan` and `airs-prompt-scan`'s copies of `airs_verdict`
+  rather than one, a `cjson.safe` stub exercises the string-decode branch of
+  `$(resp)` for real, and 7 new cases cover `airs_contents`, including that it
+  raises rather than accepts a non-string `content`.
+- `docs/sources.md`: the Kong plugin entity page and the `kong` GitHub
+  repository (`plugins.lua`, `000_base.lua`) as the source for plugin instance
+  uniqueness and route-over-service precedence; the deck sync and deck tags
+  pages; the AI Proxy Advanced reference's `auth.header_value` note; the
+  kongctl README's `--pat` flag; the `request-callout` config as the source of
+  the generic block body and its HTTP 403; and the Prisma AIRS API page's 2 MB
+  synchronous scan payload limit.
 
 ### Changed
 
@@ -37,6 +115,70 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   an AI Gateway 2.x control plane, and the v2 policy catalogue carries no Prisma
   AIRS type. The nuance is kept explicit: that plugin remains valid on
   self-hosted Kong Gateway and on Konnect hybrid with a custom data plane image.
+- Both config files: the two policies now differ by **coverage**
+  (`airs-scan` = `BOTH`, `airs-prompt-scan` = `INPUT`) rather than by
+  **direction** (one `INPUT`-only, one `OUTPUT`-only policy meant to be attached
+  together). The deck variant attaches `airs-scan` at Service level and
+  `airs-prompt-scan` at Route level, on a dedicated streaming route, relying on
+  Kong's route-over-service plugin precedence.
+- `airs_contents` in both files now takes `source` as an explicit first
+  argument and switches on it (`INPUT` → `contents[].prompt`, `OUTPUT` →
+  `contents[].response`), replacing the pair of direction-specific functions
+  that each policy carried before.
+- `docs/deployment-guide.md`: the classic control plane procedure now requires
+  a `deck gateway diff` before every `sync`, and recommends tag-scoping with
+  `--select-tag` or merging the plugin blocks into an existing state file,
+  rather than syncing this repository's file standalone — `deck gateway sync`
+  deletes anything not present in the file it is given. The Step 4 attachment
+  instructions now attach one policy, not two, chosen by whether the model
+  streams. The validation step now calls for capturing the emitted payload
+  against a throwaway endpoint and a disposable token before pointing the
+  configuration at the real Prisma AIRS key and the real credential.
+- `docs/deployment-guide.md`: fixed a reference to a non-existent
+  `config.metrics.block_details` field; the schema field is
+  `metrics.block_detail`.
+- `CONTRIBUTING.md`: assertion count updated to 55, and the pre-PR checklist now
+  runs `scripts/check-plugin-schema.py --parity` and `--schema` alongside
+  `scripts/run-lua-tests.sh` and `shellcheck`.
+
+### Fixed
+
+- The client-facing block message could be read as carrying, or was assumed to
+  eventually carry, the Prisma AIRS category and detection names. Both
+  `airs_verdict` functions now return a fixed, generic message — "Blocked by
+  Prisma AIRS", optionally with " [scan_id=...]" — on every block path,
+  including the fail-closed ones, with the category and detection names routed
+  instead to `metrics.block_reason` / `metrics.block_detail` and the Prisma AIRS
+  scan log. Naming the detection to the caller is an evasion oracle: it lets an
+  attacker use the block response itself to map which inputs trip which
+  detector.
+- `airs_contents` now raises when `content` is not a string, rather than
+  silently coercing or passing it through. The plugin injects its built-ins by
+  parameter name, so a signature change or a Kong upgrade that alters that
+  mapping would otherwise let the whole `conf` table — including the resolved
+  API key — be JSON-encoded into `contents[].prompt` and shipped to Prisma
+  AIRS. The type guard fails the request closed instead.
+- The previous layout, which attached one `INPUT` policy and one `OUTPUT`
+  policy to the same model, could not have worked on the deck variant: Kong
+  keys a plugin instance on `{name, route, service, consumer}`, and that key is
+  a unique column in the underlying table, so a second `ai-custom-guardrail`
+  instance on the same Service is rejected at apply time. It is also
+  redundant on the kongctl variant, since Kong runs a single instance of a
+  given plugin per request. Replaced by the coverage design described above.
+- `docs/deployment-guide.md` no longer claims response scanning is flatly
+  "incompatible with SSE streaming" — that statement was unverified, and the
+  chunked-buffering reading that briefly replaced it was wrong too. It now
+  describes the measured behaviour: a streamed response is not scanned at all.
+
+### Security
+
+- Block responses no longer leak the Prisma AIRS category or detection names to
+  the calling client, on any path, closing the evasion-oracle risk described
+  under Fixed. See `SECURITY.md` for the issue class.
+- `airs_contents`'s type guard prevents the plugin configuration — API key
+  included, after vault resolution — from ever being shipped to Prisma AIRS as
+  scanned text if a future Kong version changes how built-ins are injected into
+  guardrail functions. See `SECURITY.md` for the issue class.
 
 ## [0.1.0] — 2026-09-08
 

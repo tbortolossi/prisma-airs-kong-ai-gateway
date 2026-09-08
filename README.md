@@ -43,20 +43,28 @@ control plane or through `deck` on a classic Gateway control plane.
    Client app
        │  POST /v1/chat/completions
        ▼
-┌──────────────────────────────────────────┐
-│  Kong AI Gateway data plane              │
-│                                          │
-│  AI Policy: airs-prompt-scan   ──────────┼──► Prisma AIRS  /v1/scan/sync/request
-│      allow ▼ block → rejected            │        (action: allow | block)
-│  AI Model → upstream LLM provider        │
-│      ▼                                   │
-│  AI Policy: airs-response-scan ──────────┼──► Prisma AIRS  /v1/scan/sync/request
-│      allow ▼ block → rejected            │
-└──────────────────────────────────────────┘
+┌────────────────────────────────────────────────────┐
+│  Kong AI Gateway data plane                        │
+│                                                     │
+│  AI Policy: airs-scan (guarding_mode: BOTH)        │
+│      INPUT phase  (prompt)   ──────────────────────┼──► Prisma AIRS  /v1/scan/sync/request
+│      allow ▼ block → rejected                      │        (action: allow | block)
+│  AI Model → upstream LLM provider                  │
+│      OUTPUT phase (response) ──────────────────────┼──► Prisma AIRS  /v1/scan/sync/request
+│      allow ▼ block → rejected                      │
+│                                                     │
+│  Streaming models attach airs-prompt-scan          │
+│  (guarding_mode: INPUT) instead: prompt only        │
+└─────────────────────────────────────────────────────┘
        │
-       ▼  200, or an error carrying the block reason
+       ▼  200, or a rejection with "Blocked by Prisma AIRS"
    Client app
 ```
+
+One policy, two phases: `airs-scan` runs `guarding_mode: BOTH`, scanning the
+prompt in its `INPUT` phase and the model output in its `OUTPUT` phase.
+Attach one of the two per AI Model: streaming models take `airs-prompt-scan`
+(`guarding_mode: INPUT`), which covers the prompt only, instead of `airs-scan`. See [Design decisions](#design-decisions).
 
 Enforcement happens in the data plane, in your own infrastructure. Only the text
 to be scanned leaves your environment, and it goes directly to your Prisma AIRS
@@ -98,25 +106,57 @@ Prisma AIRS from outside the gateway — for example the
 where the agent invokes the scan itself. Kong's per-tool ACLs remain useful next
 to that, but they restrict which tool may be called, not what travels inside it.
 
-### Tool calls on the LLM path are not confirmed
+### Tool calls on the LLM path: message content only
 
-A chat completion carrying `tools[]`, an assistant message carrying
-`tool_calls[].function.arguments`, or a `role: "tool"` result is a different
-question from MCP, and it is open. `text_source` accepts `last_message`,
-`concatenate_user_content` and `concatenate_all_content`, and no published Kong
-documentation states what `$(content)` contains in each case beyond message text.
-Until that is observed on a live gateway, do not assume function-calling
-arguments are scanned. It is listed under
-[Verification status](#verification-status) below, and
-[docs/lab-tool-calls.md](docs/lab-tool-calls.md) is the procedure that settles
-it: an echo server that stands in for Prisma AIRS and reports which positions
-reached the scanned text.
+Settled on a live gateway on 2026-09-08 (Kong AI Gateway 2.0.3, data plane
+3.14.0.3-enterprise), with the procedure in
+[docs/lab-tool-calls.md](docs/lab-tool-calls.md). `$(content)` carries message
+**content**, and nothing else:
 
-### Already stated elsewhere
+| Position | `last_message` | `concatenate_user_content` | `concatenate_all_content` |
+|---|---|---|---|
+| system message | no | no | **scanned** |
+| user message | last message only | **scanned** | **scanned** |
+| `tools[].function.description` | no | no | **no** |
+| assistant `tool_calls[].function.arguments` | no | no | **no** |
+| `role: "tool"` result content | no | no | **scanned** |
 
-Response scanning buffers and is incompatible with SSE streaming, and the
-`OUTPUT` phase carries no prompt context alongside the response it scans — both
-are covered under [Design decisions](#design-decisions).
+Two consequences, and they point in opposite directions.
+
+**Tool definitions and generated tool arguments are never scanned**, under any
+`text_source`. They are not message content, so they never enter `$(content)`.
+A poisoned tool description, and the arguments the model chooses to send to a
+tool, are invisible to this configuration. That is the same class of gap as the
+MCP one above, and it has the same cause: the guardrail sees the text of the
+conversation, not the structure around it.
+
+**Tool results are scanned** under `concatenate_all_content` — a `role: "tool"`
+message is a message with content like any other. So data coming back from a
+tool, which is where an untrusted external system injects into the context, does
+reach Prisma AIRS.
+
+The concatenation itself is worth knowing: messages are joined with `\n\n` in
+**reverse chronological order**, most recent first, with a trailing separator.
+Under `concatenate_all_content` the system prompt is included, which is a
+false-positive surface if it contains instructions that read like an injection.
+
+### Streaming silently bypasses response scanning
+
+With `stream: true`, the `OUTPUT` phase is never invoked. Not deferred, not
+partial: the guardrail service receives no call at all, and the complete SSE
+stream reaches the client. Prompt scanning still applies.
+
+Measured on 2026-09-08 by pointing the `OUTPUT` policy at a guardrail service
+that answers `action: block` for everything. The non-streamed request was
+rejected with HTTP 400. The streamed request returned HTTP 200 and all 34 SSE
+chunks, and the guardrail service logged one single call — the non-streamed one.
+
+There is no error and no warning, so a client that sets `stream: true` silently
+downgrades itself to prompt-only coverage. See
+[Design decisions](#design-decisions) for the two ways to handle it.
+
+The `OUTPUT` phase also carries no prompt context alongside the response it
+scans, which is a design limit rather than a schema gap.
 
 ## Requirements
 
@@ -145,7 +185,7 @@ export KONNECT_PAT="<konnect pat>"
 export AI_GATEWAY_ID="<ai gateway id>"
 kongctl apply -f config/kongctl/airs-guardrail.yaml --pat "$KONNECT_PAT"
 
-# 3. Attach them to your AI Model, then validate
+# 3. Attach one policy to your AI Model, then validate
 export KONG_PROXY_URL="https://<proxy>"
 export CLIENT_KEY="<client credential>"
 ./scripts/test-airs.sh
@@ -165,57 +205,166 @@ config/deck/airs-guardrail.yaml      classic Gateway control plane
 scripts/test-airs.sh                 five-case validation suite, needs a live gateway
 scripts/run-lua-tests.sh             offline unit tests for the verdict functions
 scripts/test-verdict-functions.lua   the assertions those tests run
+scripts/check-plugin-schema.py       config parity and live-schema validation, used in CI
 scripts/lab-echo-server.py           stands in for Prisma AIRS, logs what Kong emits
 scripts/lab-tool-call-probe.sh       one completion, a marker per tool call position
 ```
 
 ## Design decisions
 
-**Two policies, not one.** `guarding_mode` accepts `BOTH`, but Prisma AIRS uses
-different payload keys for prompts (`contents[].prompt`) and responses
-(`contents[].response`), so each direction needs its own request body. One policy
-runs `INPUT`, the other `OUTPUT`.
+**Two policies by coverage, not by direction.** `airs-scan` runs
+`guarding_mode: BOTH` — the prompt is scanned in its `INPUT` phase, the model
+output in its `OUTPUT` phase — and `airs-prompt-scan` runs `guarding_mode: INPUT`
+for models that serve streaming responses. Exactly one is attached per AI Model
+(kongctl) or per scope (deck). A single request body function picks
+`contents[].prompt` versus `contents[].response` from `$(source)`, which the
+plugin overview documents as `INPUT` / `OUTPUT`.
+
+The earlier layout attached one `INPUT` policy and one `OUTPUT` policy to the
+same model. That does not work: Kong keys a plugin instance on
+`{name, route, service, consumer}`, and that key
+([`cache_key`](https://github.com/Kong/kong/blob/master/kong/db/schema/entities/plugins.lua))
+is a unique column in the underlying Postgres table
+([`000_base.lua`](https://github.com/Kong/kong/blob/master/kong/db/migrations/core/000_base.lua)),
+so a second `ai-custom-guardrail` instance on the same scope is rejected at apply
+time. Kong also runs a single instance of a given plugin per request, with a
+route-level instance overriding the service-level one for that route — see the
+[plugin entity page](https://developer.konghq.com/gateway/entities/plugin/). The
+deck variant uses that precedence directly: `airs-scan` at service level,
+`airs-prompt-scan` at route level on the dedicated streaming route.
 
 **Nested JSON comes from functions.** `request.body` is a flat map of strings —
 nested YAML fails schema validation. The Prisma AIRS payload is assembled by small
 Lua functions that return a table, following Kong's own Azure Content Safety
 example.
 
-**Fail closed by default, through two mechanisms.** `stop_on_error: true` covers a
-failed call to Prisma AIRS. The `airs_verdict` function covers a call that
-succeeds but returns an unusable verdict, including `category: "error"` and
-`category: "timeout"`, which AIRS returns alongside `action: "allow"`. Switching
-to fail-open for a pilot requires changing both.
+**Fail closed by default, through two mechanisms, and only one verdict passes.**
+`stop_on_error: true` covers a failed call to Prisma AIRS. The `airs_verdict`
+function covers a call that succeeds but returns an unusable verdict, including
+`category: "error"` and `category: "timeout"`, which AIRS returns alongside
+`action: "allow"`. Only `action: "allow"` passes traffic; any other action, a
+missing or malformed verdict, or a degraded scan category blocks. Switching to
+fail-open for a pilot requires changing both mechanisms together.
+
+**Generic block message.** The client only ever sees "Blocked by Prisma AIRS",
+optionally followed by " [scan_id=...]" — never the category or the detection
+names, and the same generic message is returned on a fail-closed block as on a
+real detection. Naming the detection to the caller is an evasion oracle: it lets
+an attacker use the block response itself to map which inputs trip which
+detector. The category and the detection names still reach `metrics.block_reason`
+/ `metrics.block_detail` in Kong's own telemetry and the Prisma AIRS scan logs in
+Strata Cloud Manager, correlated by `scan_id`. Palo Alto's own reference
+integration ([`request-callout` config](https://github.com/PaloAltoNetworks/prisma-airs-integrations))
+follows the same pattern, returning a generic "Blocked by AI security scan".
 
 **Secrets by reference.** The API key is a `{vault://env/airs-token}` reference
 resolved by the data plane at runtime. `config.params` is a referenceable field,
 so the substitution happens there. The key never transits the SaaS control plane
 and never appears in version control.
 
-**Response scanning is opt-in per model.** It requires buffering and is
-incompatible with server-sent event streaming.
+**Streaming, and what to do about it.** Response scanning is not merely
+"incompatible" with SSE — it is skipped, silently, as measured above. Two
+workable answers, and the choice is a policy one:
+
+- attach `airs-scan` and **refuse streaming** at the gateway or in the client
+  contract, so that response coverage is real for every request;
+- attach `airs-prompt-scan` on models that must stream, and state plainly that
+  those models have prompt-only coverage.
+
+What does not work is attaching `airs-scan` to a streaming model and assuming
+the response is inspected. `response_buffer_size: 65536` remains a starting
+value for the buffered case; it has no effect on a streamed response, since no
+scan happens at all.
+
+**Measured cost.** One lab, one geography: data plane in France, the **global**
+Prisma AIRS endpoint rather than a regional one, and a local Ollama answering in
+about 30 ms. Eight requests per configuration, all verified HTTP 200:
+
+| Configuration | Median end to end | Added |
+|---|---|---|
+| No policy | 73 ms | — |
+| `airs-prompt-scan`, `INPUT`, one AIRS scan | 577 ms | +0.50 s |
+| `airs-scan`, `BOTH`, two AIRS scans | 876 ms | +0.80 s |
+| `airs-scan` against a guardrail on the local network | 32 ms | +3 ms |
+
+The cost is the call to Prisma AIRS — about half a second per scan here — and
+the two scans of `BOTH` are sequential. The plugin itself costs about 3 ms.
+
+Read these numbers as one data point, not as a specification. They were taken
+from France against the global endpoint, and the shape of the delay is not a
+simple distance effect: the TCP connection to that endpoint completes in about
+25 ms, so most of the half second is the scan and its backhaul rather than the
+first network hop. Measure your own path before committing to a latency budget,
+and measure a regional endpoint against the global one rather than assuming
+which is faster.
 
 ## Verification status
 
 Every configuration key used here, and every allowed value, comes from the
 published Kong plugin schema and the Prisma AIRS OpenAPI client — see
-[docs/sources.md](docs/sources.md). The verdict functions are unit tested offline:
+[docs/sources.md](docs/sources.md). The verdict functions are unit tested
+offline, and the whole configuration was exercised against a live gateway:
 
 ```bash
-./scripts/run-lua-tests.sh
+./scripts/run-lua-tests.sh     # 55 assertions, offline
+./scripts/test-airs.sh         # 5 cases, needs a live gateway
 ```
 
-Three things remain to be confirmed against a live gateway. The first two are
-also called out in the configuration comments:
+**Lab run of 2026-09-08.** Konnect AI Gateway 2.x control plane, one
+self-managed data plane (`kong/kong-ai-gateway:2.0.3`, Kong Gateway
+3.14.0.3-enterprise), a local Ollama as the model, a live Prisma AIRS tenant
+with a profile in block mode. `scripts/test-airs.sh`: 5 cases out of 5 matched.
 
-- the explicit-argument call form `$(airs_contents(content))`, which follows the
-  plugin documentation but appears in no published example;
-- whether Kong delivers the guardrail response as a table or a string in the
-  `OUTPUT` phase. The verdict function handles both;
-- what `$(content)` actually contains under `concatenate_all_content` — in
-  particular whether tool definitions, tool call arguments and tool results are
-  included, which decides whether function calling is scanned at all. See
+What that run settled, all previously `SYNTHESIZED`:
+
+- **Functions are referenced bare, `$(fn)`, and the built-ins are injected by
+  parameter name.** A function declaring `(source, content)` receives the phase
+  and the text, one declaring `(conf)` receives the config, one declaring
+  `(resp)` receives the guardrail response. An unrecognised parameter name is
+  rejected outright: *argument 'a' is not allowed in guardrail functions*. The
+  explicit-argument call form `$(airs_contents(source, content))`, which this
+  repository shipped until this run and which the plugin overview appears to
+  license, is **invalid**: the data plane answers HTTP 500, *failed to render by
+  function: invalid expression syntax*, and no request reaches the model.
+- **`$(resp)` is a Lua table in both phases**, `OUTPUT` included. The overview's
+  "string when inspecting the response" does not hold for the guardrail service
+  response, so the defensive `cjson.safe` decode in the `OUTPUT` verdict is dead
+  code.
+- **A block returns HTTP 400**, with the body
+  `{"error":{"message":"<block_message>"}}`. That is the client contract.
+- **`$(content)` under `concatenate_all_content`** is the message contents joined
+  by `\n\n` in reverse chronological order, system prompt included, tool results
+  included, tool definitions and tool call arguments excluded — see
   [Scope and limits](#scope-and-limits).
+- **`guarding_mode: BOTH` covers both phases in one policy**, with `$(source)`
+  distinguishing them, and the two scans are sequential.
+- **Streaming skips the `OUTPUT` phase entirely**, with no error — see
+  [Scope and limits](#scope-and-limits).
+
+Confirmed against the schema and the published examples: `guarding_mode`,
+`text_source`, `params`/`request.*`/`response.*`/`functions`, `timeout`,
+`ssl_verify`, `stop_on_error`, `response_buffer_size`, `allow_masking`,
+`metrics`, `custom_metrics`, `request.auth`, dotted access to a function result
+(`$(fn.field)`), and the `$(source)` values `INPUT` / `OUTPUT`. The plugin
+instance uniqueness and route-over-service precedence behind the two-policy
+design are documented on Kong's plugin entity page and in the `kong` GitHub
+repository — see [docs/sources.md](docs/sources.md).
+
+What remains `SYNTHESIZED`, still to be confirmed:
+
+- what the plugin does when a function raises an error — this repository assumes
+  it falls under `stop_on_error` and blocks;
+- whether `metrics.*` fields accept an expression template the way
+  `response.block` does — the schema does not say so explicitly for `metrics`,
+  and the lab run did not read the emitted metrics back;
+- the `response_buffer_size: 65536` value, a starting point rather than a
+  measured figure, and one that only applies to buffered responses.
+
+`request.auth` (location `body` \| `header` \| `query`, `name`, `value`; `value`
+is referenceable and encrypted) is a documented alternative to the
+`params` + `$(conf.params.api_key)` header pattern used here; both published
+examples use the pattern this repository follows, so `request.auth` is left
+untested rather than switched to speculatively.
 
 Validate in a non-production environment before this reaches production traffic.
 
