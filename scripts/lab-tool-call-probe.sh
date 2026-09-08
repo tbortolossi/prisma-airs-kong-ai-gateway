@@ -33,7 +33,21 @@ KEY="${CLIENT_KEY:?CLIENT_KEY is not set}"
 MODEL="${MODEL_NAME:-gpt-4o}"
 
 BODY_FILE="$(mktemp)"
-trap 'rm -f "$BODY_FILE"' EXIT
+AUTH_CFG="$(mktemp)"
+chmod 600 "$AUTH_CFG"
+trap 'rm -f "$BODY_FILE" "$AUTH_CFG"' EXIT
+
+# Same discipline as scripts/test-airs.sh: the credential goes through a curl
+# config file, not an -H argument visible in the process list. curl's config
+# parser treats a double quote as the end of the value and strips backslashes,
+# so both are escaped.
+esc_key="${KEY//\\/\\\\}"
+esc_key="${esc_key//\"/\\\"}"
+printf 'header = "Authorization: Bearer %s"\n' "$esc_key" > "$AUTH_CFG"
+
+# The model name is interpolated into a JSON string literal below.
+esc_model="${MODEL//\\/\\\\}"
+esc_model="${esc_model//\"/\\\"}"
 
 echo "───────────────────────────────────────────────────────────────"
 echo "▶ Tool call probe → ${PROXY} (model ${MODEL})"
@@ -42,11 +56,11 @@ echo
 
 code="$(curl -s -o "$BODY_FILE" -w '%{http_code}' \
   -X POST "${PROXY}/v1/chat/completions" \
-  -H "Authorization: Bearer ${KEY}" \
+  -K "$AUTH_CFG" \
   -H "Content-Type: application/json" \
   --data @- <<JSON
 {
-  "model": "${MODEL}",
+  "model": "${esc_model}",
   "messages": [
     {
       "role": "system",

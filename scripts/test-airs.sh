@@ -41,6 +41,10 @@ esc_key="${KEY//\\/\\\\}"
 esc_key="${esc_key//\"/\\\"}"
 printf 'header = "Authorization: Bearer %s"\n' "$esc_key" > "$AUTH_CFG"
 
+# The model name is interpolated into a JSON string literal in call().
+esc_model="${MODEL//\\/\\\\}"
+esc_model="${esc_model//\"/\\\"}"
+
 unexpected=0
 blocked_codes=""
 
@@ -58,7 +62,7 @@ call() {
     -H "Content-Type: application/json" \
     --data @- <<JSON
 {
-  "model": "${MODEL}",
+  "model": "${esc_model}",
   "messages": [{"role": "user", "content": ${prompt}}]
 }
 JSON

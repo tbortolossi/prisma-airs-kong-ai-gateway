@@ -20,6 +20,7 @@ config/**/*.customer.yaml
 config/**/*.prod.yaml
 
 # ---- Tooling ----
+__pycache__/
 .deck/
 deck.dump.yaml
 kongctl.log

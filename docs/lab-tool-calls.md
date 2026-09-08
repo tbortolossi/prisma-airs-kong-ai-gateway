@@ -21,10 +21,11 @@ It uses two files:
 > Prisma AIRS is not scanning anything. Run it on a non-production gateway, and
 > restore the configuration when you are done — step 5.
 
-> **Set `params.api_key` to a dummy value first.** The policy sends it as
+> **Set `request.auth.value` to a dummy value first.** The policy sends it as
 > `x-pan-token` to whatever `request.url` names. The echo server redacts it from
 > its output, but the right control is not to send a real token to a lab
-> listener at all.
+> listener at all. Changing `request.url` alone is not enough: the vault
+> reference would still resolve, and the real token would leave the gateway.
 
 The data plane must be able to reach the echo server. Run it on a host on the
 same private network as the data plane — a bastion, the container host, or a
@@ -54,11 +55,12 @@ It answers `action: allow, category: benign` by default. `--verdict block`,
 In `config/kongctl/airs-guardrail.yaml`, in the **prompt scan** policy only:
 
 ```yaml
-      params:
-        api_key: "dummy-lab-token"          # was {vault://env/airs-token}
-
       request:
         url: http://<echo-host>:8099/v1/scan/sync/request
+        auth:
+          location: header
+          name: x-pan-token
+          value: "dummy-lab-token"          # was {vault://env/airs-token}
 ```
 
 Apply it as usual. The classic control plane variant is the same two lines in
@@ -103,7 +105,7 @@ distinction matters: absence is the answer, not a missing observation.
 
 ## Step 5 — Restore, then record
 
-Put `request.url` and `params.api_key` back, and re-apply. Confirm with
+Put `request.url` and `request.auth.value` back, and re-apply. Confirm with
 `scripts/test-airs.sh` that real scanning has resumed.
 
 Then:
@@ -127,9 +129,10 @@ also answers three of the other open questions:
   explicit-argument form does not work, functions are referenced bare and the
   built-ins are injected by parameter name. Re-run this check after any Kong
   upgrade — a payload with a well formed `contents` proves the form still holds.
-- **the block status code.** Run the probe with `--verdict block` and read the
-  HTTP code the gateway returns. `scripts/test-airs.sh` currently asserts "not
-  200" because that code has never been observed.
+- **the block status code.** Answered by the 2026-09-08 run, below: HTTP 400
+  with `{"error":{"message":"<block_message>"}}`. `scripts/test-airs.sh` asserts
+  a non-200 carrying the "Prisma AIRS" marker and reports the distinct codes it
+  saw, so a change of status code after a Kong upgrade shows up in its summary.
 - **added latency.** Time the probe with the policy enabled and disabled. The
   echo server answers immediately, so the delta is the plugin's own overhead,
   not the network path to Prisma AIRS.

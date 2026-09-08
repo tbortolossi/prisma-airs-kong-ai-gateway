@@ -40,7 +40,21 @@ jobs:
         # Runs on push, pull_request and the weekly cron alike, since all three
         # trigger this job. This is what the cron comment above promises: catch
         # the schema drifting out from under a repo that has not changed.
-        run: python3 scripts/check-plugin-schema.py --schema
+        run: |
+          set +e
+          python3 scripts/check-plugin-schema.py --schema
+          rc=$?
+          set -e
+          if [ "$rc" -eq 3 ]; then
+            # Exit 3 is "could not fetch the schema", not "schema violation".
+            # On push and pull_request the parity and Lua checks still gate the
+            # change, so a docs outage is a warning there. On the weekly cron
+            # the fetch is the whole point, so a miss must fail visibly.
+            echo "::warning::published plugin schema could not be fetched; schema validation did not run"
+            if [ "${{ github.event_name }}" = "schedule" ]; then exit 1; fi
+            exit 0
+          fi
+          exit "$rc"
 
       - name: Run offline verdict tests
         run: ./scripts/run-lua-tests.sh
