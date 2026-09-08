@@ -9,6 +9,21 @@ Enforce **Prisma AIRS AI Runtime (API Intercept)** as an inline guardrail on
 planes, including Azure Container Apps and Kubernetes. No custom plugin, no data
 plane image rebuild.
 
+> [!IMPORTANT]
+> **Streaming bypasses response scanning, silently.** When a client sets
+> `stream: true`, Kong never invokes the `OUTPUT` phase: the guardrail service
+> receives no call, there is no error and no warning, and the complete SSE stream
+> reaches the client. Prompt scanning is unaffected. Any caller can therefore opt
+> itself out of response scanning with one flag in its own request body.
+>
+> This is Kong's behaviour, measured on a live gateway on 2026-09-08, not a
+> configuration choice made here — no setting in this repository changes it.
+> Scope your deployment around it before you deploy: either refuse `stream: true`
+> at the gateway, or accept prompt-only coverage on the models that must stream.
+> The measurement is in
+> [Streaming silently bypasses response scanning](#streaming-silently-bypasses-response-scanning);
+> the two supported ways to handle it are in [Design decisions](#design-decisions).
+
 ---
 
 ## Why this exists
