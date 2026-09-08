@@ -41,6 +41,7 @@ config/deck/airs-guardrail.yaml      classic Gateway control plane
 scripts/test-airs.sh                 end-to-end suite, needs a live gateway
 scripts/run-lua-tests.sh             offline verdict function tests
 scripts/test-verdict-functions.lua   the assertions those tests run
+scripts/check-plugin-schema.py       config parity + live-schema validation, used in CI
 scripts/lab-echo-server.py           stands in for AIRS, reports what Kong emits
 scripts/lab-tool-call-probe.sh       one completion, a marker per tool position
 CLAUDE.md                            this file
@@ -95,16 +96,42 @@ no competitive positioning. Working notes go in `CLAUDE.local.md`.
 
 - `ai-custom-guardrail` requires **Kong Gateway 3.14+** and an AI licence.
 - It requires `ai-proxy` or `ai-proxy-advanced` in the chain. It does not work standalone.
-- `guarding_mode` is `BOTH` / `INPUT` / `OUTPUT`. Prompt and response scanning use
-  different Prisma AIRS payload keys (`contents[].prompt` vs `contents[].response`),
-  which is why there are two policies rather than one with `BOTH`.
+- `guarding_mode` is `BOTH` / `INPUT` / `OUTPUT`. Two policies exist, differing by
+  **coverage, not direction**: `airs-scan` (`BOTH`) scans the prompt in its `INPUT`
+  phase and the model output in its `OUTPUT` phase from one policy, picking
+  `contents[].prompt` vs `contents[].response` from `$(source)`; `airs-prompt-scan`
+  (`INPUT`) is the prompt-only variant for streaming models. Exactly one is
+  attached per AI Model (kongctl) or per scope (deck) — never two on the same
+  scope. Kong keys a plugin instance on `{name, route, service, consumer}`
+  (`cache_key`), and that key is a `UNIQUE` column in the underlying table
+  ([`kong/db/schema/entities/plugins.lua`](https://github.com/Kong/kong/blob/master/kong/db/schema/entities/plugins.lua),
+  [`000_base.lua`](https://github.com/Kong/kong/blob/master/kong/db/migrations/core/000_base.lua)),
+  so a second `ai-custom-guardrail` on the same Service is rejected at apply
+  time; Kong also runs one instance of a given plugin per request, with a
+  route-level instance overriding the service-level one
+  ([plugin entity](https://developer.konghq.com/gateway/entities/plugin/)). The
+  deck variant puts `airs-scan` at Service level and `airs-prompt-scan` at
+  Route level on the streaming route, using that precedence directly.
 - `request.body`, `request.headers`, `request.queries` and `params` are **flat maps
   of strings**. Nested YAML fails validation. Nested JSON is produced by a function
   that returns a Lua table, as in Kong's Azure Content Safety example.
 - The built-in expression variables are `$(source)`, `$(conf)`, `$(content)` and
   `$(resp)`. Kong documents them as usable *as arguments to functions*, but not
   inside a function body.
-- Response scanning forces buffering and is incompatible with SSE streaming.
+- A function that receives content to forward to Prisma AIRS **must type-guard
+  it as a string and raise otherwise**. If the explicit-argument call form is
+  ever not honoured by a Kong version, the documented implicit signature
+  (`function(conf)`) would pass the whole `conf` table — API key included, after
+  vault resolution — where a string is expected. A permissive fallback such as
+  `content or ""` would then ship it to Prisma AIRS as scanned text. `airs_contents`
+  in both files raises on anything but a string; there is no fallback.
+- The schema describes `response_buffer_size` (default 100) as bytes buffered
+  from upstream before each call to the guardrail service, response guard only,
+  and `allow_masking`'s description notes streaming is disabled when it is
+  enabled — together suggesting `OUTPUT` scanning buffers and re-scans in
+  chunks rather than requiring the full response first. This is not yet
+  confirmed against a live gateway (see `CLAUDE.local.md`); until it is,
+  streaming models get `airs-prompt-scan`, not `airs-scan`.
 - Prisma AIRS endpoints are regional. The global endpoint is the default; keep
   the URL a single point of change.
 
@@ -113,16 +140,33 @@ no competitive positioning. Working notes go in `CLAUDE.local.md`.
 - YAML: two-space indent, no tabs, comments in English.
 - Lua verdict functions: guard clause first, then detection extraction, then
   verdict. Keep them under 40 lines. No external requires, with one exception —
-  the `OUTPUT` verdict function may attempt a `cjson.safe` decode inside a
-  `pcall`, because Kong documents `$(resp)` as a string in that phase. The
-  `pcall` must fail closed if the require or the decode fails.
+  `airs_verdict` may attempt a `cjson.safe` decode inside a `pcall` when `$(resp)`
+  arrives as a string, because Kong documents `$(resp)` as a string in the
+  `OUTPUT` phase. The `pcall` must fail closed if the require or the decode fails.
+- `airs_verdict` returns `{ block, block_message, detail }`. Only
+  `action == "allow"` passes; any other action, a missing or non-string action,
+  or `category` of `"error"` / `"timeout"` blocks. `block_message` is always the
+  fixed, generic client-facing text ("Blocked by Prisma AIRS", optionally with
+  `[scan_id=...]`) — never the category or a detection name, on any path,
+  including fail-closed. Category and detection names go only in `detail`,
+  which callers wire to `metrics.block_reason` / `metrics.block_detail`, never
+  to `response.block_message`.
+- Every copy of `airs_verdict` and every copy of `airs_contents` must be
+  byte-identical: across `config/kongctl/` and `config/deck/`, and across every
+  guardrail instance within one file. `scripts/run-lua-tests.sh` enforces this
+  and runs 55 assertions against the shipped Lua (no copy lives in the test file
+  itself).
 - Shell: `set -u`, and no `set -e` in `test-airs.sh` specifically (a non-zero curl
   must not abort the remaining cases). Scripts must pass `shellcheck`.
 - Documentation: English. Every external claim carries a link.
 
 ## Before opening a PR
 
-- `./scripts/run-lua-tests.sh` passes.
+- `./scripts/run-lua-tests.sh` passes (55 assertions).
+- `python3 scripts/check-plugin-schema.py --parity` passes (kongctl/deck config
+  blocks identical per instance).
+- `python3 scripts/check-plugin-schema.py --schema` passes (every key and enum
+  value exists in the live published schema).
 - Both `config/kongctl/` and `config/deck/` updated in step.
 - `docs/sources.md` updated if a new upstream reference was used.
 - Verification tags reviewed, and anything downgraded is flagged in the PR body.
