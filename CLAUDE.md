@@ -149,12 +149,13 @@ no competitive positioning. Working notes go in `CLAUDE.local.md`.
   fixed, generic client-facing text ("Blocked by Prisma AIRS", optionally with
   `[scan_id=...]`) — never the category or a detection name, on any path,
   including fail-closed. Category and detection names go only in `detail`,
-  which callers wire to `metrics.block_reason` / `metrics.block_detail`, never
-  to `response.block_message`.
+  which callers wire to `metrics.block_detail`; `metrics.block_reason` receives
+  the generic `block_message` (with its `scan_id`) for correlation, and neither
+  ever feeds `response.block_message` with a category.
 - Every copy of `airs_verdict` and every copy of `airs_contents` must be
   byte-identical: across `config/kongctl/` and `config/deck/`, and across every
   guardrail instance within one file. `scripts/run-lua-tests.sh` enforces this
-  and runs 55 assertions against the shipped Lua (no copy lives in the test file
+  and runs 63 assertions against the shipped Lua (no copy lives in the test file
   itself).
 - Shell: `set -u`, and no `set -e` in `test-airs.sh` specifically (a non-zero curl
   must not abort the remaining cases). Scripts must pass `shellcheck`.
@@ -162,7 +163,7 @@ no competitive positioning. Working notes go in `CLAUDE.local.md`.
 
 ## Before opening a PR
 
-- `./scripts/run-lua-tests.sh` passes (55 assertions).
+- `./scripts/run-lua-tests.sh` passes (63 assertions).
 - `python3 scripts/check-plugin-schema.py --parity` passes (kongctl/deck config
   blocks identical per instance).
 - `python3 scripts/check-plugin-schema.py --schema` passes (every key and enum

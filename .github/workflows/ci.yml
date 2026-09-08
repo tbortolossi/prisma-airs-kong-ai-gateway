@@ -22,7 +22,7 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y luajit
 
       - name: Install PyYAML
-        run: python3 -m pip install --user pyyaml
+        run: python3 -m pip install --user -r requirements-dev.txt
 
       - name: Check YAML parses and kongctl/deck config parity
         run: python3 scripts/check-plugin-schema.py --parity
