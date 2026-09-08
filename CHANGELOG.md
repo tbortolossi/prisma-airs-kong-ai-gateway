@@ -6,6 +6,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- `docs/sources.md`: the `ScanRequest` and `ScanResponse` property lists were
+  incomplete. Both models carry three optional correlation identifiers —
+  `tr_id`, `session_id` and `transaction_id` — and none of them is deprecated.
+  Added, together with a reference to Palo Alto Networks' AI Sessions page,
+  which is what explains why they matter: sessions group API calls sharing the
+  same transaction ID, and AIRS generates one per atomic call when none is
+  supplied.
+- `scripts/lab-echo-server.py`: reports all three correlation identifiers and
+  echoes them back, instead of echoing a `tr_id` that no configuration in this
+  repository sends. A lab run now shows their absence rather than hiding it.
+  Its header also still instructed the operator to blank `params.api_key`,
+  which has not existed since the credential moved to `request.auth` in 0.3.0.
+
+### Added
+
+- `docs/deployment-guide.md`: a "Scan correlation" operational consideration and
+  a matching troubleshooting row, stating that no correlation identifier is sent
+  and what that means when reading the Prisma AIRS scan logs — the two scans of
+  one exchange are not linked, and the AI Sessions view groups nothing. Blocking
+  and profile tuning are unaffected.
+
+### Known gap
+
+- The guardrail sends no correlation identifier to Prisma AIRS, so the prompt
+  scan and the response scan of the same exchange are not linked in the scan
+  log and the AI Sessions view groups nothing. This cannot be fixed in
+  configuration: a guardrail function receives only `source`, `content`, `conf`
+  and `resp`, so any value it could produce would either be constant across all
+  traffic or differ between the two phases. It is part of the v0.5 sidecar
+  scope, for the same reason as `metadata.app_user` and `metadata.ai_model`.
+
 ### Fixed
 
 - `docs/lab-tool-calls.md` still told the reader to neutralise `params.api_key`

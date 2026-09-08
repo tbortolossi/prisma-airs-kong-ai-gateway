@@ -16,8 +16,8 @@
 # Standard library only. Runs anywhere Python 3 runs, no dependency to install.
 #
 # LAB ONLY. While the policy points here, Prisma AIRS is not scanning anything.
-# Never run this against a gateway carrying production traffic, and set
-# params.api_key to a dummy value first so no real token is sent here.
+# Never run this against a gateway carrying production traffic, and point
+# request.auth.value at a dummy vault entry first so no real token is sent here.
 #
 # Protocol, and how to read the output: docs/lab-tool-calls.md
 # =============================================================================
@@ -34,6 +34,10 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 # named as well, because a position that is not scanned leaves no trace at all:
 # without it, absence would be silent and unreadable.
 MARKER = re.compile(r"AIRSPROBE_[A-Z_]+")
+
+# ScanRequest correlation identifiers, in schema order. Echoed back and
+# reported so a run makes plain which of them the guardrail policy emits.
+CORRELATION_IDS = ("tr_id", "session_id", "transaction_id")
 
 EXPECTED = [
     ("AIRSPROBE_SYSTEM", "system message"),
@@ -96,10 +100,15 @@ class Handler(BaseHTTPRequestHandler):
             with open(Handler.log_path, "a", encoding="utf-8") as handle:
                 handle.write(json.dumps({"at": stamp, "body": body or raw}) + "\n")
 
+        # ScanResponse echoes the correlation identifiers back. All three are
+        # optional on both sides and none is deprecated; a null here means the
+        # gateway sent nothing, which is the current state of both config
+        # files. Reported explicitly rather than omitted, so a lab run shows
+        # the absence instead of hiding it.
         answer = {
             "scan_id": f"lab-scan-{Handler.seen:04d}",
             "report_id": f"lab-report-{Handler.seen:04d}",
-            "tr_id": (body or {}).get("tr_id"),
+            **{key: (body or {}).get(key) for key in CORRELATION_IDS},
             **VERDICTS[Handler.verdict],
         }
         payload = json.dumps(answer).encode("utf-8")
@@ -113,6 +122,9 @@ class Handler(BaseHTTPRequestHandler):
     def report(self, body, raw):
         """Answer the question the run was started for."""
         print("-" * 78)
+
+        sent = [key for key in CORRELATION_IDS if (body or {}).get(key) is not None]
+        print(f"  correlation ids: {', '.join(sent) if sent else 'none — every scan is its own session'}")
 
         contents = (body or {}).get("contents")
         if not isinstance(contents, list) or not contents:
