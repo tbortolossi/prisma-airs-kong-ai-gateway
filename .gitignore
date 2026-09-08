@@ -1,0 +1,34 @@
+# ---- Private working context: never commit ----
+CLAUDE.local.md
+*.local.md
+notes/
+.private/
+
+# ---- Secrets ----
+.env
+.env.*
+*.pem
+*.key
+*.pfx
+secrets/
+**/airs-token*
+konnect-pat*
+
+# ---- Customer-specific configuration ----
+# Keep only placeholder values in tracked YAML.
+config/**/*.customer.yaml
+config/**/*.prod.yaml
+
+# ---- Tooling ----
+.deck/
+deck.dump.yaml
+kongctl.log
+/tmp/
+*.log
+
+# ---- OS and editors ----
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp

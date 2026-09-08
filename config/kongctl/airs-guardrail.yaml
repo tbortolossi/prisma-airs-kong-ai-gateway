@@ -1,0 +1,250 @@
+# =============================================================================
+# Prisma AIRS AI Runtime (API Intercept) on Kong AI Gateway 2.x
+#
+# Shape : AI Gateway 2.x control plane in Konnect, self-managed data planes
+# Tool  : kongctl apply -f config/kongctl/airs-guardrail.yaml
+# Needs : data planes on Kong Gateway 3.14+ with an AI licence
+#
+# Declares two AI Policies of type ai-custom-guardrail. No custom plugin,
+# no data plane image rebuild.
+#
+# VERIFICATION STATUS (full table in CLAUDE.local.md)
+#   DOCUMENTED  : every config key used below, and its allowed values, come from
+#                 the plugin schema at
+#                 https://developer.konghq.com/plugins/ai-custom-guardrail/reference/
+#                 guarding_mode is an enum of BOTH | INPUT | OUTPUT.
+#                 params, request.headers and request.body are referenceable,
+#                 so {vault://...} resolves inside them.
+#                 The Prisma AIRS request and response shapes come from the
+#                 generated OpenAPI client in PaloAltoNetworks/aisecurity-python-sdk.
+#   SYNTHESIZED : the explicit-argument call form "$(fn(content))". Kong's two
+#                 published examples reference functions bare, e.g. "$(fn)", and
+#                 rely on implicit argument injection. The plugin overview states
+#                 that the built-in variables "can be used as arguments in
+#                 functions", which is what this file does, but no published
+#                 example shows the syntax. Confirm against an echo server
+#                 before production. See CLAUDE.local.md Q2.
+#   NOT PRESENT : retry and cache options. The plugin schema has neither.
+#
+# Replace params.profile with your Prisma AIRS security profile name, and
+# params.app_name with a label identifying this gateway in your scan logs.
+# If your AIRS tenant is not on the global endpoint, change request.url.
+# =============================================================================
+
+ai_gateway_policies:
+
+  # ---------------------------------------------------------------------------
+  # Prompt scan: client -> LLM
+  # ---------------------------------------------------------------------------
+  - ref: airs-prompt-scan
+    ai_gateway: !lookup { id: !env AI_GATEWAY_ID }
+    name: airs-prompt-scan
+    display_name: "Prisma AIRS - prompt scan"
+    type: ai-custom-guardrail
+    enabled: true
+    config:
+      # INPUT inspects the request. The enum is BOTH | INPUT | OUTPUT.
+      # BOTH is not used here: Prisma AIRS keys prompts and responses
+      # differently (contents[].prompt vs contents[].response), so each
+      # direction needs its own request body.
+      guarding_mode: INPUT
+      text_source: concatenate_all_content
+
+      # Schema defaults are timeout 10000 and stop_on_error true. Both are
+      # restated because they are load-bearing: stop_on_error is what actually
+      # blocks traffic when the AIRS call itself fails, and 10 s of added
+      # latency on an unreachable endpoint is too long for an inline guardrail.
+      timeout: 5000
+      ssl_verify: true
+      stop_on_error: true
+
+      params:
+        api_key: "{vault://env/airs-token}"
+        profile: "kong-airs-prod"
+        app_name: "kong-ai-gateway"
+
+      request:
+        url: https://service.api.aisecurity.paloaltonetworks.com/v1/scan/sync/request
+        headers:
+          x-pan-token: "$(conf.params.api_key)"
+          Content-Type: "application/json"
+          Accept: "application/json"
+        # request.body is a flat map of strings. Nested JSON is produced by
+        # functions that return a Lua table, as in Kong's Azure Content Safety
+        # example. A nested YAML map here fails schema validation.
+        body:
+          ai_profile: "$(airs_profile)"
+          metadata: "$(airs_metadata)"
+          contents: "$(airs_contents(content))"
+
+      response:
+        block: "$(airs_verdict.block)"
+        block_message: "$(airs_verdict.block_message)"
+
+      functions:
+        airs_profile: |
+          return function(conf)
+            return { profile_name = conf.params.profile }
+          end
+
+        airs_metadata: |
+          return function(conf)
+            return { app_name = conf.params.app_name }
+          end
+
+        airs_contents: |
+          return function(content)
+            return { { prompt = content or "" } }
+          end
+
+        airs_verdict: |
+          return function(resp)
+            -- Fail closed: without a verdict, no decision can be trusted.
+            if type(resp) ~= "table" or type(resp.action) ~= "string" then
+              return { block = true,
+                       block_message = "Request blocked: Prisma AIRS verdict unavailable (fail-closed)" }
+            end
+
+            -- AIRS reports its own degradation through category, not action.
+            if resp.category == "error" or resp.category == "timeout" then
+              return { block = true,
+                       block_message = "Request blocked: Prisma AIRS scan " .. resp.category .. " (fail-closed)" }
+            end
+
+            if resp.action ~= "block" then
+              return { block = false, block_message = "Prisma AIRS scan passed" }
+            end
+
+            local hits = {}
+            for k, v in pairs(resp.prompt_detected or {}) do
+              if v == true then hits[#hits + 1] = k end
+            end
+
+            local msg = "Request blocked by Prisma AIRS (" .. tostring(resp.category or "unknown") .. ")"
+            if #hits > 0 then msg = msg .. ": " .. table.concat(hits, ", ") end
+            if resp.scan_id then msg = msg .. " [scan_id=" .. tostring(resp.scan_id) .. "]" end
+
+            return { block = true, block_message = msg }
+          end
+
+  # ---------------------------------------------------------------------------
+  # Response scan: LLM -> client
+  # Buffers the response before evaluating it. Do not attach to models that
+  # serve SSE streaming.
+  # ---------------------------------------------------------------------------
+  - ref: airs-response-scan
+    ai_gateway: !lookup { id: !env AI_GATEWAY_ID }
+    name: airs-response-scan
+    display_name: "Prisma AIRS - response scan"
+    type: ai-custom-guardrail
+    enabled: true
+    config:
+      guarding_mode: OUTPUT
+      text_source: concatenate_all_content
+
+      timeout: 5000
+      ssl_verify: true
+      stop_on_error: true
+
+      params:
+        api_key: "{vault://env/airs-token}"
+        profile: "kong-airs-prod"
+        app_name: "kong-ai-gateway"
+
+      request:
+        url: https://service.api.aisecurity.paloaltonetworks.com/v1/scan/sync/request
+        headers:
+          x-pan-token: "$(conf.params.api_key)"
+          Content-Type: "application/json"
+          Accept: "application/json"
+        body:
+          ai_profile: "$(airs_profile)"
+          metadata: "$(airs_metadata)"
+          contents: "$(airs_contents(content))"
+
+      response:
+        block: "$(airs_verdict.block)"
+        block_message: "$(airs_verdict.block_message)"
+
+      functions:
+        airs_profile: |
+          return function(conf)
+            return { profile_name = conf.params.profile }
+          end
+
+        airs_metadata: |
+          return function(conf)
+            return { app_name = conf.params.app_name }
+          end
+
+        # AIRS accepts a response-only content object. The originating prompt is
+        # not reachable from the OUTPUT phase, where $(content) is the model
+        # output, so this scan carries no prompt context.
+        airs_contents: |
+          return function(content)
+            return { { response = content or "" } }
+          end
+
+        airs_verdict: |
+          return function(resp)
+            -- Kong documents $(resp) as a string in the OUTPUT phase.
+            -- Decode defensively; an undecodable verdict blocks.
+            if type(resp) == "string" then
+              local ok, decoded = pcall(function()
+                return require("cjson.safe").decode(resp)
+              end)
+              resp = ok and decoded or nil
+            end
+
+            if type(resp) ~= "table" or type(resp.action) ~= "string" then
+              return { block = true,
+                       block_message = "Response blocked: Prisma AIRS verdict unavailable (fail-closed)" }
+            end
+
+            if resp.category == "error" or resp.category == "timeout" then
+              return { block = true,
+                       block_message = "Response blocked: Prisma AIRS scan " .. resp.category .. " (fail-closed)" }
+            end
+
+            if resp.action ~= "block" then
+              return { block = false, block_message = "Prisma AIRS scan passed" }
+            end
+
+            local hits = {}
+            for k, v in pairs(resp.response_detected or {}) do
+              if v == true then hits[#hits + 1] = k end
+            end
+
+            local msg = "Response blocked by Prisma AIRS (" .. tostring(resp.category or "unknown") .. ")"
+            if #hits > 0 then msg = msg .. ": " .. table.concat(hits, ", ") end
+            if resp.scan_id then msg = msg .. " [scan_id=" .. tostring(resp.scan_id) .. "]" end
+
+            return { block = true, block_message = msg }
+          end
+
+# =============================================================================
+# Attaching the policies.
+# Take the existing AI Model definition and add the two references to its
+# policies array, then re-apply it. Indicative extract:
+# =============================================================================
+#
+# ai_gateway_models:
+#   - ref: my-gpt-4o
+#     ai_gateway: !lookup { id: !env AI_GATEWAY_ID }
+#     name: my-gpt-4o
+#     type: model
+#     formats:
+#       - type: openai
+#     policies:
+#       - !ref airs-prompt-scan
+#       - !ref airs-response-scan
+#     targets:
+#       - name: gpt-4o
+#         provider: generic-openai
+#         config:
+#           type: openai
+#     capabilities:
+#       - generate
+#
+# To protect every model on the gateway instead, declare the policies with
+# global: true rather than referencing them per model.
