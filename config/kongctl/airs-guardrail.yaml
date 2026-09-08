@@ -106,18 +106,21 @@ ai_gateway_policies:
       response_buffer_size: 65536
 
       params:
-        api_key: "{vault://env/airs-token}"
         profile: "kong-airs-prod"
         app_name: "kong-ai-gateway"
 
       request:
         url: https://service.api.aisecurity.paloaltonetworks.com/v1/scan/sync/request
-        # The token travels in x-pan-token through $(conf.params.api_key), the
-        # pattern both published examples use. The schema also offers
-        # request.auth (location: body | header | query, name, value; value is
-        # referenceable and encrypted) as a dedicated slot. Untested here.
+        # request.auth is the schema's dedicated slot for the credential:
+        # value is referenceable, so the vault reference resolves here, and
+        # it is stored encrypted, which config.params is not. LAB-VERIFIED
+        # 2026-09-08 against a live Prisma AIRS tenant, replacing the earlier
+        # params.api_key + $(conf.params.api_key) interpolation.
+        auth:
+          location: header
+          name: x-pan-token
+          value: "{vault://env/airs-token}"
         headers:
-          x-pan-token: "$(conf.params.api_key)"
           Content-Type: "application/json"
           Accept: "application/json"
         # request.body is a flat map of strings. Nested JSON is produced by
@@ -153,14 +156,19 @@ ai_gateway_policies:
 
         # Builds contents[] from the phase. The reference is bare: the plugin
         # injects source and content by parameter name. LAB-VERIFIED
-        # 2026-09-08. What the plugin does when a function raises is still
-        # SYNTHESIZED, assumed to fall under stop_on_error.
-        # The type guard is mandatory. If Kong does not honour the explicit
-        # arguments, the documented implicit signature applies: function(conf)
-        # on the request side, function(resp, conf) on the response side. A
-        # permissive fallback such as `content or ""` would then JSON-encode the
-        # conf table, api_key included after vault resolution, into
-        # contents[].prompt and ship it to Prisma AIRS and its scan logs.
+        # 2026-09-08. A function that raises fails the request closed with
+        # HTTP 500, verified the same day.
+        # The type guard is mandatory, and its reason changed with the lab
+        # run. Built-ins are injected by parameter name, so a Kong change to
+        # that mapping — or a typo in a parameter name — would hand this
+        # function something other than the scanned text. A permissive
+        # fallback such as `content or ""` would then JSON-encode whatever
+        # arrived into contents[].prompt and ship it to Prisma AIRS and its
+        # scan logs. The API key is no longer exposed that way since the
+        # credential moved to request.auth, but the profile name, the app
+        # name and any future param would be. Raising is safe: a function
+        # that errors returns HTTP 500 and the request never reaches the
+        # model. LAB-VERIFIED 2026-09-08.
         airs_contents: |
           return function(source, content)
             if type(content) ~= "string" then
@@ -178,8 +186,11 @@ ai_gateway_policies:
         # Palo Alto's own reference integration returns a generic body.
         airs_verdict: |
           return function(resp)
-            -- Kong documents $(resp) as a table in INPUT and a string in OUTPUT.
-            -- Decode defensively; an undecodable verdict blocks.
+            -- $(resp) is a table in BOTH phases on Kong AI Gateway 2.0.3, so this
+            -- branch is inactive today. Kept rather than deleted: require and
+            -- cjson.safe.decode were verified to work inside a guardrail function,
+            -- so it is real cover if a Kong release ever passes a string — and
+            -- without it such a release would fail every request closed.
             if type(resp) == "string" then
               local ok, decoded = pcall(function()
                 return require("cjson.safe").decode(resp)
@@ -242,14 +253,21 @@ ai_gateway_policies:
       response_buffer_size: 65536
 
       params:
-        api_key: "{vault://env/airs-token}"
         profile: "kong-airs-prod"
         app_name: "kong-ai-gateway"
 
       request:
         url: https://service.api.aisecurity.paloaltonetworks.com/v1/scan/sync/request
+        # request.auth is the schema's dedicated slot for the credential:
+        # value is referenceable, so the vault reference resolves here, and
+        # it is stored encrypted, which config.params is not. LAB-VERIFIED
+        # 2026-09-08 against a live Prisma AIRS tenant, replacing the earlier
+        # params.api_key + $(conf.params.api_key) interpolation.
+        auth:
+          location: header
+          name: x-pan-token
+          value: "{vault://env/airs-token}"
         headers:
-          x-pan-token: "$(conf.params.api_key)"
           Content-Type: "application/json"
           Accept: "application/json"
         body:
@@ -290,8 +308,11 @@ ai_gateway_policies:
 
         airs_verdict: |
           return function(resp)
-            -- Kong documents $(resp) as a table in INPUT and a string in OUTPUT.
-            -- Decode defensively; an undecodable verdict blocks.
+            -- $(resp) is a table in BOTH phases on Kong AI Gateway 2.0.3, so this
+            -- branch is inactive today. Kept rather than deleted: require and
+            -- cjson.safe.decode were verified to work inside a guardrail function,
+            -- so it is real cover if a Kong release ever passes a string — and
+            -- without it such a release would fail every request closed.
             if type(resp) == "string" then
               local ok, decoded = pcall(function()
                 return require("cjson.safe").decode(resp)
