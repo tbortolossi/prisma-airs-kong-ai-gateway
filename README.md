@@ -1,24 +1,41 @@
 # Prisma AIRS on Kong AI Gateway
 
-Enforce **Prisma AIRS AI Runtime (API Intercept)** as an inline guardrail on
-**Kong AI Gateway**, with configuration only. No custom Lua plugin, no data plane
-image rebuild.
+**Kong AI Gateway 2.x removes the custom Lua plugin path — and with it, the way
+Prisma AIRS was integrated with Kong until now.** This repository restores the
+enforcement without Lua, using configuration only.
 
-Works with a Konnect SaaS control plane and self-managed data planes, including
-Azure Container Apps and Kubernetes.
+Enforce **Prisma AIRS AI Runtime (API Intercept)** as an inline guardrail on
+**Kong AI Gateway**, with a Konnect SaaS control plane and self-managed data
+planes, including Azure Container Apps and Kubernetes. No custom plugin, no data
+plane image rebuild.
 
 ---
 
 ## Why this exists
 
-Kong AI Gateway 2.x replaced the plugin-centric model with AI entities and AI
-Policies. The Prisma AIRS custom Lua plugin published by Palo Alto Networks still
-applies to self-hosted Kong Gateway and to Konnect hybrid deployments with a
-custom data plane image, but it cannot be loaded on an AI Gateway 2.x control
-plane, and the v2 policy catalogue has no dedicated Prisma AIRS type.
+Kong AI Gateway 2.x replaced the plugin-centric model with AI entities and
+[AI Policies](https://developer.konghq.com/ai-gateway/policies/). Two
+consequences follow, and together they are the reason this repository exists.
 
-This repository closes that gap using `ai-custom-guardrail`, Kong's supported
-extension point for calling an external guardrail service over HTTP.
+**Custom Lua plugins have no place on an AI Gateway 2.x control plane.** The
+Prisma AIRS plugin published by Palo Alto Networks
+([prisma-airs-integrations](https://github.com/PaloAltoNetworks/prisma-airs-integrations))
+remains fully valid where a custom plugin can still be loaded — self-hosted Kong
+Gateway, and Konnect hybrid with a
+[custom data plane image](https://developer.konghq.com/custom-plugins/konnect-hybrid-mode/).
+It cannot be deployed on an AI Gateway 2.x control plane, where configuration is
+expressed as AI entities and policies rather than as plugins shipped inside the
+data plane image. Teams moving to v2 lose the integration they had.
+
+**The v2 policy catalogue has no Prisma AIRS type.** It ships vendor-specific
+guardrail policies for several third-party providers; Prisma AIRS is not among
+them. There is nothing to select in the catalogue.
+
+What v2 does provide is `ai-custom-guardrail`, Kong's supported extension point
+for calling an external guardrail service over HTTP. This repository uses it to
+carry the same Prisma AIRS enforcement — prompt scan, response scan, fail closed
+— as declarative configuration, applied through `kongctl` on an AI Gateway 2.x
+control plane or through `deck` on a classic Gateway control plane.
 
 ## What it does
 

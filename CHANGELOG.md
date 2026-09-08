@@ -21,6 +21,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the source of the scope boundary, and the Prisma AIRS MCP threat detection and
   MCP Server pages.
 
+### Changed
+
+- README: the opening paragraph and **Why this exists** now lead with the reason
+  the repository exists. Kong AI Gateway 2.x removes the custom Lua plugin path,
+  so the Prisma AIRS plugin published by Palo Alto Networks cannot be deployed on
+  an AI Gateway 2.x control plane, and the v2 policy catalogue carries no Prisma
+  AIRS type. The nuance is kept explicit: that plugin remains valid on
+  self-hosted Kong Gateway and on Konnect hybrid with a custom data plane image.
+
 ## [0.1.0] — 2026-09-08
 
 First public release. Configuration-only enforcement of Prisma AIRS AI Runtime
