@@ -6,7 +6,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-Nothing yet.
+### Fixed
+
+- `docs/lab-tool-calls.md` still told the reader to neutralise `params.api_key`
+  before pointing the policy at the echo server. Since 0.3.0 the credential is
+  `request.auth.value`, so following the procedure as written would have sent
+  the real Prisma AIRS token to the lab listener. The procedure now replaces
+  `request.auth.value`, and its stale "block code never observed" bullet now
+  states the verified HTTP 400.
+- `scripts/lab-tool-call-probe.sh` passed the client credential as a curl `-H`
+  argument, visible in the process list. It now uses the same curl config file
+  as `scripts/test-airs.sh`. Both scripts also JSON-escape `MODEL_NAME`.
+- CI: a failure to fetch the published plugin schema (exit 3) is reported as a
+  warning on push and pull request, where the parity and Lua checks still gate
+  the change, and fails only the weekly cron, whose purpose is that fetch.
+- Comments in both configuration files still called the raising-function case
+  `SYNTHESIZED` and described streaming as a buffering nuance. Both now carry
+  the lab findings: HTTP 500 independent of `stop_on_error`, and an OUTPUT
+  phase that is never invoked under `stream: true`.
+- `docs/sources.md` now cites the Request Callout plugin page for the
+  "Kong Gateway 3.10+" note in the deployment guide.
 
 ## [0.3.0] — 2026-09-08
 

@@ -55,7 +55,7 @@ AIRS configuration field that is not backed by a page listed here.
 
 | Reference | Used for |
 |---|---|
-| [Request Callout plugin](https://developer.konghq.com/plugins/request-callout/) | Fallback path for data planes below 3.14 |
+| [Request Callout plugin](https://developer.konghq.com/plugins/request-callout/) | Fallback path for data planes below 3.14. The page states `min_version: gateway: '3.10'`, the source for the "Kong Gateway 3.10+" note in the deployment guide |
 | [Custom plugins in Konnect hybrid mode](https://developer.konghq.com/custom-plugins/konnect-hybrid-mode/) | Why the Lua plugin path is not available on an AI Gateway 2.x control plane |
 
 ## Palo Alto Networks

@@ -53,8 +53,15 @@
 #   LAB-VERIFIED : with text_source concatenate_all_content, $(content) is the
 #                 message contents joined by "\n\n", system prompt included,
 #                 and the model output alone in the OUTPUT phase.
-#   SYNTHESIZED : what the plugin does when a function raises an error. This
-#                 file assumes it falls under stop_on_error and blocks.
+#   LAB-VERIFIED : with stream: true the OUTPUT phase is never invoked. A
+#                 guardrail answering "block" to everything received no call,
+#                 and every SSE chunk reached the client with HTTP 200; the
+#                 same policy blocked the non-streamed request with 400.
+#                 Response scanning covers buffered responses only.
+#   LAB-VERIFIED : a function that raises refuses the request with HTTP 500
+#                 before the model is called, independent of stop_on_error.
+#                 The Lua error text reaches the client verbatim, so error()
+#                 messages must never carry anything sensitive.
 #   SYNTHESIZED : metrics.* accepting an expression template. Inferred from the
 #                 description of response.block ("template or string to
 #                 evaluate"); the schema says nothing of the kind for metrics.
@@ -72,9 +79,11 @@ ai_gateway_policies:
   # ---------------------------------------------------------------------------
   # airs-scan: prompt and response
   # Scans the prompt before it reaches the model and the model output before
-  # it reaches the client. Response scanning buffers the upstream body in
-  # chunks of response_buffer_size. For models that serve streaming responses,
-  # attach airs-prompt-scan instead until lab results say otherwise.
+  # it reaches the client, for buffered responses only. LAB-VERIFIED
+  # 2026-09-08: with stream: true the OUTPUT phase is never invoked, the
+  # guardrail receives no call, and every SSE chunk reaches the client with
+  # HTTP 200. Models that serve streaming responses get airs-prompt-scan, and
+  # the README ("Scope and limits") states the gap to the customer.
   # ---------------------------------------------------------------------------
   - ref: airs-scan
     ai_gateway: !lookup { id: !env AI_GATEWAY_ID }
@@ -230,9 +239,10 @@ ai_gateway_policies:
 
   # ---------------------------------------------------------------------------
   # airs-prompt-scan: prompt only
-  # Same config as airs-scan with guarding_mode INPUT. For models that serve
-  # streaming responses, where buffering the output for a response scan is not
-  # acceptable. The model output is not scanned.
+  # Same config as airs-scan with guarding_mode INPUT, for models that serve
+  # streaming responses: with stream: true the OUTPUT phase is skipped silently
+  # (LAB-VERIFIED 2026-09-08), so airs-scan would give no response coverage
+  # there anyway. The model output is not scanned.
   # ---------------------------------------------------------------------------
   - ref: airs-prompt-scan
     ai_gateway: !lookup { id: !env AI_GATEWAY_ID }

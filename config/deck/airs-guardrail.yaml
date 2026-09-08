@@ -52,9 +52,11 @@ services:
       # -----------------------------------------------------------------------
       # 2. airs-scan: prompt and response, service level.
       #    Scans the prompt before it reaches the model and the model output
-      #    before it reaches the client. Response scanning buffers the upstream
-      #    body in chunks of response_buffer_size. Routes that serve streaming
-      #    responses carry airs-prompt-scan instead (route 2 below).
+      #    before it reaches the client, for buffered responses only. With
+      #    stream: true the OUTPUT phase is never invoked and the stream
+      #    reaches the client unscanned (LAB-VERIFIED 2026-09-08), so routes
+      #    that serve streaming responses carry airs-prompt-scan instead
+      #    (route 2 below).
       # -----------------------------------------------------------------------
       - name: ai-custom-guardrail
         instance_name: airs-scan
@@ -134,10 +136,9 @@ services:
               end
 
             # Builds contents[] from the phase. The reference is bare: the
-            # plugin injects source and content by parameter name.
-            # LAB-VERIFIED 2026-09-08. Remaining SYNTHESIZED point:
-            # and what the plugin does when a function raises (assumed to fall
-            # under stop_on_error). Both are lab questions.
+            # plugin injects source and content by parameter name. LAB-VERIFIED
+            # 2026-09-08. A function that raises fails the request closed with
+            # HTTP 500, verified the same day.
             # The type guard is mandatory, and its reason changed with the lab
             # run. Built-ins are injected by parameter name, so a Kong change to
             # that mapping — or a typo in a parameter name — would hand this
