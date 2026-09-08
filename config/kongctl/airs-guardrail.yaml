@@ -149,6 +149,9 @@ ai_gateway_policies:
       # metrics. This is the channel that keeps the category and the detection
       # names out of the client response and in the gateway's own telemetry.
       metrics:
+        # block_reason carries the generic message with scan_id, for
+        # correlation with the Prisma AIRS scan log; block_detail carries
+        # the category and the detection names.
         block_reason: "$(airs_verdict.block_message)"
         block_detail: "$(airs_verdict.detail)"
 
@@ -290,6 +293,9 @@ ai_gateway_policies:
         block_message: "$(airs_verdict.block_message)"
 
       metrics:
+        # block_reason carries the generic message with scan_id, for
+        # correlation with the Prisma AIRS scan log; block_detail carries
+        # the category and the detection names.
         block_reason: "$(airs_verdict.block_message)"
         block_detail: "$(airs_verdict.detail)"
 

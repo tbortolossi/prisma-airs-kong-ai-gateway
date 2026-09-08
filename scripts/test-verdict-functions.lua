@@ -7,7 +7,7 @@
 -- (airs-prompt-scan) and airs_contents (airs-scan), so these assertions can
 -- never drift from the shipped configuration.
 --
--- 55 assertions: 24 verdict cases run against both verdict copies, plus 7 on
+-- 63 assertions: 28 verdict cases run against both verdict copies, plus 7 on
 -- airs_contents. TAP-style output, non-zero exit on any failure.
 --
 -- Run with: ./scripts/run-lua-tests.sh
@@ -38,6 +38,10 @@ package.preload["cjson.safe"] = function()
     end,
   }
 end
+
+-- Captured so the cjson.safe failure-mode cases below can restore the working
+-- stub after each of them and leave later assertions unaffected.
+local WORKING_CJSON_SAFE_LOADER = package.preload["cjson.safe"]
 
 local failures = 0
 local total = 0
@@ -100,6 +104,17 @@ end
 local function verdict_cases(label, verdict)
   local function case(name, input, want)
     check(label .. ": " .. name, verdict(input), want)
+  end
+
+  -- Swaps package.preload["cjson.safe"] for `loader` for the duration of one
+  -- case, then restores the working FIXTURES-based stub, so cases after this
+  -- one still get a real decoder.
+  local function case_with_cjson_loader(name, loader, input, want)
+    package.preload["cjson.safe"] = loader
+    package.loaded["cjson.safe"] = nil
+    case(name, input, want)
+    package.preload["cjson.safe"] = WORKING_CJSON_SAFE_LOADER
+    package.loaded["cjson.safe"] = nil
   end
 
   -- Fail-closed paths. Each of these is a way the scan can fail to produce a
@@ -184,6 +199,43 @@ local function verdict_cases(label, verdict)
     { block = true, detail_has = "fail-closed" })
   case("empty string body fails closed", "",
     { block = true, detail_has = "fail-closed" })
+
+  -- cjson.safe failure modes. The FIXTURES stub above only exercises "require
+  -- succeeds, decode returns nil, err" (the "undecodable string body" case
+  -- just above). These are the two other ways the pcall around require and
+  -- decode can fail, and the fail-closed guard must catch both the same way.
+  case_with_cjson_loader(
+    "cjson.safe require raises a string error fails closed",
+    function() error("cjson.safe module not found") end,
+    '{"action":"allow","category":"benign"}',
+    { block = true, message_has = "Blocked by Prisma AIRS",
+      detail = "verdict unavailable (fail-closed)" })
+
+  -- Mutation check: the error value raised is itself shaped like an allow
+  -- verdict. The correct code discards `decoded` whenever `ok` is false
+  -- (`resp = ok and decoded or nil`); if that check were ever dropped in
+  -- favour of unconditionally using the pcall's second return value, this
+  -- case would pass the guardrail open instead of failing it closed.
+  case_with_cjson_loader(
+    "cjson.safe require raises a table shaped like an allow verdict, still fails closed",
+    function() error({ action = "allow", category = "benign" }) end,
+    '{"action":"allow","category":"benign"}',
+    { block = true, message_has = "Blocked by Prisma AIRS",
+      detail = "verdict unavailable (fail-closed)" })
+
+  case_with_cjson_loader(
+    "cjson.safe loads but has no decode function fails closed",
+    function() return {} end,
+    '{"action":"allow","category":"benign"}',
+    { block = true, message_has = "Blocked by Prisma AIRS",
+      detail = "verdict unavailable (fail-closed)" })
+
+  case_with_cjson_loader(
+    "cjson.safe decode returns a non-table value fails closed",
+    function() return { decode = function() return 42 end } end,
+    '{"action":"allow","category":"benign"}',
+    { block = true, message_has = "Blocked by Prisma AIRS",
+      detail = "verdict unavailable (fail-closed)" })
 end
 
 verdict_cases("scan_verdict", scan_verdict)

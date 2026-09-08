@@ -124,7 +124,11 @@ if command -v luajit >/dev/null 2>&1; then
 elif command -v lua >/dev/null 2>&1; then
   exec lua "$WORK/suite.lua"
 elif command -v docker >/dev/null 2>&1; then
-  exec docker run --rm -v "$WORK:/w:ro" akorn/luajit:2.1-alpine luajit /w/suite.lua
+  # Pinned by digest so the fallback can't silently pick up a different image.
+  # Refresh with: docker manifest inspect akorn/luajit:2.1-alpine
+  exec docker run --rm -v "$WORK:/w:ro" \
+    akorn/luajit:2.1-alpine@sha256:e8dde58a088da0569eb2e6f176ae8807d0a84b8c705d130919dae2605d857cd8 \
+    luajit /w/suite.lua
 else
   echo "FAIL: need luajit, lua or docker to run the suite" >&2
   exit 1

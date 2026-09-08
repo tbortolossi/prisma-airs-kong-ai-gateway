@@ -44,6 +44,8 @@ services:
             - route_type: llm/v1/chat
               auth:
                 header_name: Authorization
+                # Full header value: the vault entry must carry the "Bearer "
+                # prefix itself (docs/sources.md, AI Proxy Advanced reference).
                 header_value: "{vault://env/openai-key}"
               model:
                 provider: openai
@@ -121,6 +123,9 @@ services:
           # the detection names out of the client response and in the
           # gateway's own telemetry.
           metrics:
+            # block_reason carries the generic message with scan_id, for
+            # correlation with the Prisma AIRS scan log; block_detail carries
+            # the category and the detection names.
             block_reason: "$(airs_verdict.block_message)"
             block_detail: "$(airs_verdict.detail)"
 
@@ -276,6 +281,9 @@ services:
                 block_message: "$(airs_verdict.block_message)"
 
               metrics:
+                # block_reason carries the generic message with scan_id, for
+                # correlation with the Prisma AIRS scan log; block_detail carries
+                # the category and the detection names.
                 block_reason: "$(airs_verdict.block_message)"
                 block_detail: "$(airs_verdict.detail)"
 

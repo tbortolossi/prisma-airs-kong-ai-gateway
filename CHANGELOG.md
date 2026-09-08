@@ -60,6 +60,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `docs/sources.md` now cites the Request Callout plugin page for the
   "Kong Gateway 3.10+" note in the deployment guide.
 
+### Added
+
+- Eight offline assertions on the `cjson.safe` branch of `airs_verdict`:
+  `require` raising, `require` raising a table shaped like an allow verdict,
+  a module without `decode`, and `decode` returning a non-table all fail
+  closed with the generic message, against both verdict copies. 63 assertions
+  in total, up from 55.
+- `requirements-dev.txt` pins PyYAML for `scripts/check-plugin-schema.py`; CI
+  installs from it and Dependabot now tracks the `pip` ecosystem.
+
+### Changed
+
+- `scripts/lab-echo-server.py` takes its request counter under a lock, so two
+  concurrent requests can no longer share a `scan_id`.
+- `scripts/test-airs.sh` and `scripts/lab-tool-call-probe.sh` reject a
+  `CLIENT_KEY` containing a newline before writing the curl config file.
+- `scripts/run-lua-tests.sh` pins its Docker fallback image to a digest.
+- Comments only: the `metrics` blocks in both configuration files state the
+  split between `block_reason` (generic message with `scan_id`, for
+  correlation) and `block_detail` (category and detections), and `CLAUDE.md`
+  describes that wiring rather than a looser one. The deck file notes that the
+  `ai-proxy-advanced` header value must carry its own `Bearer ` prefix.
+
 ## [0.3.0] — 2026-09-08
 
 Second lab round on the same gateway, closing every question the first one left

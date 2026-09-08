@@ -16,8 +16,9 @@
 # Standard library only. Runs anywhere Python 3 runs, no dependency to install.
 #
 # LAB ONLY. While the policy points here, Prisma AIRS is not scanning anything.
-# Never run this against a gateway carrying production traffic, and point
-# request.auth.value at a dummy vault entry first so no real token is sent here.
+# Never run this against a gateway carrying production traffic, and set
+# request.auth.value to a dummy literal such as "dummy-lab-token" first (see
+# docs/lab-tool-calls.md, Step 2) so no real token is sent here.
 #
 # Protocol, and how to read the output: docs/lab-tool-calls.md
 # =============================================================================
@@ -26,6 +27,7 @@ import argparse
 import json
 import re
 import sys
+import threading
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -71,12 +73,20 @@ class Handler(BaseHTTPRequestHandler):
     verdict = "allow"
     log_path = None
     seen = 0
+    seen_lock = threading.Lock()
 
     def do_POST(self):  # noqa: N802 - name imposed by BaseHTTPRequestHandler
         length = int(self.headers.get("Content-Length") or 0)
         raw = self.rfile.read(length).decode("utf-8", "replace")
 
-        Handler.seen += 1
+        # Take the request's own sequence number once, under the lock, and use
+        # this local value for everything below. ThreadingHTTPServer runs one
+        # thread per request; without the lock, and without pinning the value
+        # to a local, two concurrent requests can race between the increment
+        # and the later reads, handing out a duplicate scan_id/report_id.
+        with Handler.seen_lock:
+            Handler.seen += 1
+            seen = Handler.seen
         stamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
 
         try:
@@ -86,7 +96,7 @@ class Handler(BaseHTTPRequestHandler):
             body, pretty = None, f"<not JSON: {exc}>\n{raw}"
 
         print("=" * 78)
-        print(f"#{Handler.seen}  {stamp}  {self.command} {self.path}")
+        print(f"#{seen}  {stamp}  {self.command} {self.path}")
         print("-" * 78)
         for name, value in self.headers.items():
             shown = "<redacted>" if name.lower() in REDACTED else value
@@ -106,8 +116,8 @@ class Handler(BaseHTTPRequestHandler):
         # files. Reported explicitly rather than omitted, so a lab run shows
         # the absence instead of hiding it.
         answer = {
-            "scan_id": f"lab-scan-{Handler.seen:04d}",
-            "report_id": f"lab-report-{Handler.seen:04d}",
+            "scan_id": f"lab-scan-{seen:04d}",
+            "report_id": f"lab-report-{seen:04d}",
             **{key: (body or {}).get(key) for key in CORRELATION_IDS},
             **VERDICTS[Handler.verdict],
         }

@@ -37,6 +37,15 @@ trap 'rm -f "$BODY_FILE" "$AUTH_CFG"' EXIT
 # file rather than from an -H argument on the command line.
 # curl's config parser treats a double quote as the end of the value and
 # strips backslashes, so both must be escaped or the key is silently truncated.
+# A newline or carriage return survives that escaping and would either split
+# the "header = ..." config line in two or inject a second header/value, so it
+# is rejected outright rather than escaped.
+case "$KEY" in
+  *$'\n'* | *$'\r'*)
+    echo "CLIENT_KEY must not contain a newline or carriage return" >&2
+    exit 2
+    ;;
+esac
 esc_key="${KEY//\\/\\\\}"
 esc_key="${esc_key//\"/\\\"}"
 printf 'header = "Authorization: Bearer %s"\n' "$esc_key" > "$AUTH_CFG"

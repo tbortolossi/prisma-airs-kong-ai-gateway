@@ -40,7 +40,15 @@ trap 'rm -f "$BODY_FILE" "$AUTH_CFG"' EXIT
 # Same discipline as scripts/test-airs.sh: the credential goes through a curl
 # config file, not an -H argument visible in the process list. curl's config
 # parser treats a double quote as the end of the value and strips backslashes,
-# so both are escaped.
+# so both are escaped. A newline or carriage return survives that escaping and
+# would either split the "header = ..." config line in two or inject a second
+# header/value, so it is rejected outright rather than escaped.
+case "$KEY" in
+  *$'\n'* | *$'\r'*)
+    echo "CLIENT_KEY must not contain a newline or carriage return" >&2
+    exit 2
+    ;;
+esac
 esc_key="${KEY//\\/\\\\}"
 esc_key="${esc_key//\"/\\\"}"
 printf 'header = "Authorization: Bearer %s"\n' "$esc_key" > "$AUTH_CFG"

@@ -41,8 +41,10 @@ two files or between the copies inside one file; `scripts/check-plugin-schema.py
 
 ## Before you open a pull request
 
+`check-plugin-schema.py` needs PyYAML: `python3 -m pip install --user -r requirements-dev.txt`.
+
 ```bash
-./scripts/run-lua-tests.sh                        # 55 assertions, no gateway needed
+./scripts/run-lua-tests.sh                        # 63 assertions, no gateway needed
 python3 scripts/check-plugin-schema.py --parity   # kongctl/deck config blocks match
 python3 scripts/check-plugin-schema.py --schema   # every key/enum exists in the live schema
 shellcheck scripts/*.sh

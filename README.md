@@ -320,7 +320,7 @@ published Kong plugin schema and the Prisma AIRS OpenAPI client — see
 offline, and the whole configuration was exercised against a live gateway:
 
 ```bash
-./scripts/run-lua-tests.sh     # 55 assertions, offline
+./scripts/run-lua-tests.sh     # 63 assertions, offline
 ./scripts/test-airs.sh         # 5 cases, needs a live gateway
 ```
 
