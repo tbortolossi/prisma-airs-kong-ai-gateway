@@ -16,58 +16,16 @@ jobs:
     name: Verify configuration
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
       - name: Install LuaJIT
         run: sudo apt-get update && sudo apt-get install -y luajit
 
-      - name: Check YAML parses, with kongctl tags
-        run: |
-          python3 - <<'PY'
-          import sys, yaml
+      - name: Install PyYAML
+        run: python3 -m pip install --user pyyaml
 
-          class Loader(yaml.SafeLoader):
-              pass
-
-          for tag in ("!lookup", "!env", "!ref"):
-              Loader.add_constructor(tag, lambda loader, node: None)
-
-          files = (
-              "config/kongctl/airs-guardrail.yaml",
-              "config/deck/airs-guardrail.yaml",
-          )
-          docs = {}
-          for path in files:
-              with open(path) as handle:
-                  docs[path] = yaml.load(handle, Loader=Loader)
-              print(f"{path} parses")
-
-          # The two files must carry an identical config block. This is the
-          # rule in CLAUDE.md: guardrail changes land in both, together.
-          kongctl = docs[files[0]]["ai_gateway_policies"]
-          deck = [
-              plugin
-              for plugin in docs[files[1]]["services"][0]["plugins"]
-              if plugin["name"] == "ai-custom-guardrail"
-          ]
-
-          if len(kongctl) != len(deck):
-              sys.exit(f"policy count differs: {len(kongctl)} vs {len(deck)}")
-
-          failed = False
-          for policy, plugin in zip(kongctl, deck):
-              if policy["config"] != plugin["config"]:
-                  failed = True
-                  print(f"config differs for {policy['name']}")
-                  keys = set(policy["config"]) | set(plugin["config"])
-                  for key in sorted(keys):
-                      if policy["config"].get(key) != plugin["config"].get(key):
-                          print(f"  differs at: {key}")
-              else:
-                  print(f"{policy['name']}: kongctl and deck configs identical")
-
-          sys.exit(1 if failed else 0)
-          PY
+      - name: Check YAML parses and kongctl/deck config parity
+        run: python3 scripts/check-plugin-schema.py --parity
 
       - name: Check guarding_mode against the published enum
         run: |
@@ -77,6 +35,12 @@ jobs:
             exit 1
           fi
           grep -hE '^\s*guarding_mode:' -r config/ | sort -u
+
+      - name: Validate config against the live plugin schema
+        # Runs on push, pull_request and the weekly cron alike, since all three
+        # trigger this job. This is what the cron comment above promises: catch
+        # the schema drifting out from under a repo that has not changed.
+        run: python3 scripts/check-plugin-schema.py --schema
 
       - name: Run offline verdict tests
         run: ./scripts/run-lua-tests.sh
@@ -90,10 +54,10 @@ jobs:
     name: Secret scan
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           fetch-depth: 0
 
-      - uses: gitleaks/gitleaks-action@v2
+      - uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2.3.9
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
