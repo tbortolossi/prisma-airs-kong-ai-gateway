@@ -9,6 +9,10 @@ Enforce **Prisma AIRS AI Runtime (API Intercept)** as an inline guardrail on
 planes, including Azure Container Apps and Kubernetes. No custom plugin, no data
 plane image rebuild.
 
+*Community assets, published by an individual contributor. Not an official Palo
+Alto Networks or Kong product, and covered by no support commitment from either
+vendor — see [Disclaimer](#disclaimer). Provided under the MIT licence.*
+
 > [!IMPORTANT]
 > **Streaming bypasses response scanning, silently.** When a client sets
 > `stream: true`, Kong never invokes the `OUTPUT` phase: the guardrail service

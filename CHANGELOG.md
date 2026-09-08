@@ -8,6 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- README: the "community assets, not an official Palo Alto Networks or Kong
+  product" statement now also appears under the opening paragraph, not only in
+  the `Disclaimer` section at the foot of the page. The repository is public and
+  carries a personal copyright; a reader arriving from a link should not have to
+  scroll past four hundred lines to learn that neither vendor supports it. The
+  `Disclaimer` section itself is unchanged.
 - `docs/deployment-guide.md`: the **Outcome** line claimed that every prompt and
   every response transiting the gateway is scanned. That is false for a streamed
   response, as the same document already said nine sections further down. It now
