@@ -107,7 +107,10 @@ question from MCP, and it is open. `text_source` accepts `last_message`,
 documentation states what `$(content)` contains in each case beyond message text.
 Until that is observed on a live gateway, do not assume function-calling
 arguments are scanned. It is listed under
-[Verification status](#verification-status) below.
+[Verification status](#verification-status) below, and
+[docs/lab-tool-calls.md](docs/lab-tool-calls.md) is the procedure that settles
+it: an echo server that stands in for Prisma AIRS and reports which positions
+reached the scanned text.
 
 ### Already stated elsewhere
 
@@ -156,11 +159,14 @@ rollout and troubleshooting: **[docs/deployment-guide.md](docs/deployment-guide.
 ```
 docs/deployment-guide.md             step-by-step deployment procedure
 docs/sources.md                      canonical upstream references
+docs/lab-tool-calls.md               lab procedure: is function calling scanned?
 config/kongctl/airs-guardrail.yaml   AI Gateway 2.x
 config/deck/airs-guardrail.yaml      classic Gateway control plane
 scripts/test-airs.sh                 five-case validation suite, needs a live gateway
 scripts/run-lua-tests.sh             offline unit tests for the verdict functions
 scripts/test-verdict-functions.lua   the assertions those tests run
+scripts/lab-echo-server.py           stands in for Prisma AIRS, logs what Kong emits
+scripts/lab-tool-call-probe.sh       one completion, a marker per tool call position
 ```
 
 ## Design decisions

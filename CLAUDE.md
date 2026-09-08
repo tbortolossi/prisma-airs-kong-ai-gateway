@@ -35,11 +35,14 @@ SECURITY.md                          how to report a security issue
 CHANGELOG.md                         released changes
 docs/deployment-guide.md             customer-facing procedure
 docs/sources.md                      canonical upstream references
+docs/lab-tool-calls.md               lab procedure: is function calling scanned?
 config/kongctl/airs-guardrail.yaml   AI Gateway 2.x
 config/deck/airs-guardrail.yaml      classic Gateway control plane
 scripts/test-airs.sh                 end-to-end suite, needs a live gateway
 scripts/run-lua-tests.sh             offline verdict function tests
 scripts/test-verdict-functions.lua   the assertions those tests run
+scripts/lab-echo-server.py           stands in for AIRS, reports what Kong emits
+scripts/lab-tool-call-probe.sh       one completion, a marker per tool position
 CLAUDE.md                            this file
 CLAUDE.local.md                      private working context (gitignored)
 ```

@@ -20,6 +20,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `docs/sources.md`: the AI MCP Proxy plugin and AI MCP Server entity pages as
   the source of the scope boundary, and the Prisma AIRS MCP threat detection and
   MCP Server pages.
+- `scripts/lab-echo-server.py`, `scripts/lab-tool-call-probe.sh` and
+  `docs/lab-tool-calls.md`: a lab procedure that settles whether function calling
+  is scanned. The echo server stands in for the Prisma AIRS endpoint, logs the
+  payload the policy actually emits, and reports which of five marked positions —
+  system message, user message, tool definition, tool call arguments, tool result
+  — reached the scanned text. Standard library only, no dependency to install.
+  The same run also exposes the emitted `contents` object, so it can confirm the
+  explicit-argument call form and the HTTP status returned on a block.
 
 ### Changed
 
