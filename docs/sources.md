@@ -27,6 +27,13 @@ AIRS configuration field that is not backed by a page listed here.
 | [Get started with AI Gateway](https://developer.konghq.com/ai-gateway/get-started/) | Working `kongctl apply` invocations and entity shapes |
 | [AI Proxy Advanced reference](https://developer.konghq.com/plugins/ai-proxy-advanced/reference/) | `targets[].route_type`, `targets[].auth`, `targets[].model` used in the deck variant |
 
+## Kong — MCP, and why it is out of scope
+
+| Reference | Used for |
+|---|---|
+| [AI MCP Proxy plugin](https://developer.konghq.com/plugins/ai-mcp-proxy/) | The scope boundary stated in the README. Kong Gateway 3.12+. Lists "applying guardrails to MCP AI plugin requests and responses" among the unsupported features, and instructs that the plugin must not be configured together with other AI plugins on the same Service or Route — which is what rules out chaining `ai-custom-guardrail` onto MCP traffic. Also the source for the four listener modes and the per-tool ACLs |
+| [AI MCP Server entity](https://developer.konghq.com/ai-gateway/entities/ai-mcp-server/) | The AI Policies attachable to an MCP Server in AI Gateway 2.x: rate limiting, request and response transformation, logging, OAuth-based ACL gating. No guardrail among them |
+
 ## Kong — secrets
 
 | Reference | Used for |
@@ -47,6 +54,8 @@ AIRS configuration field that is not backed by a page listed here.
 | [Prisma AIRS AI Runtime API, developer docs](https://pan.dev/prisma-airs/api/airuntimesecurity/airuntimesecurityapi/) | Scan API endpoint, request and response schema |
 | [aisecurity-python-sdk](https://github.com/PaloAltoNetworks/aisecurity-python-sdk) | **Source of truth for the AIRS payload.** The generated OpenAPI client under `aisecurity/generated_openapi_client/docs/` documents `ScanRequest` (`tr_id`, `ai_profile`, `metadata`, `contents`), `ScanResponse` (`scan_id`, `report_id`, `category`, `action`, `prompt_detected`, `response_detected`, `error`, `timeout`), `PromptDetected`, `ResponseDetected`, `Metadata` and `AiProfile` field by field |
 | [API Intercept overview](https://docs.paloaltonetworks.com/ai-runtime-security/activation-and-onboarding/ai-runtime-security-api-intercept-overview) | Onboarding, API application creation, security profiles |
+| [Detect MCP Threats, API Intercept](https://docs.paloaltonetworks.com/ai-runtime-security/administration/api-intercept-create-configure-security-profile/detect-mcp-threats) | Evidence that the MCP gap is Kong-side, not AIRS-side. API Intercept accepts a `contents[].tool_event` object (`metadata.ecosystem`, `method`, `server_name`, `tool_invoked`, `input`, `output`) on `/v1/scan/sync/request` and reports findings under `tool_detected`, covering tool definition poisoning and credential leakage |
+| [Prisma AIRS MCP Server](https://docs.paloaltonetworks.com/ai-runtime-security/activation-and-onboarding/prisma-airs-mcp-server-for-centralized-ai-agent-security/understanding-the-prisma-airs-mcp-server) | The path available today for MCP coverage, outside the gateway: the agent invokes the scan itself |
 | [prisma-airs-integrations](https://github.com/PaloAltoNetworks/prisma-airs-integrations) | Official Kong assets: custom Lua plugin v1 and v2, `request-callout` variant. `Kong/custom-plugin-v2/handler.lua` and `Kong/request-callout/request-callout-prisma-airs-config.json` confirm the wire payload, the `x-pan-token` header, and the fail-closed verdict mapping |
 | [Prisma AIRS Intercept plugin on Kong hub](https://developer.konghq.com/plugins/prisma-airs-intercept/) | Third-party plugin, Kong Gateway 3.4+, custom image required |
 

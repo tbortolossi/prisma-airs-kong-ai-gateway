@@ -50,6 +50,54 @@ injection, sensitive data (DLP), malicious URLs, toxic content, malicious code,
 source code, topic violations, and — on responses — database security and
 ungrounded content.
 
+## Scope and limits
+
+What this configuration scans is the prompt text and the response text on the LLM
+path. Two adjacent surfaces are not covered, and are stated here rather than left
+to be discovered in production.
+
+### MCP traffic is out of scope
+
+Kong does not allow a guardrail on MCP. The
+[AI MCP Proxy plugin](https://developer.konghq.com/plugins/ai-mcp-proxy/) lists
+"applying guardrails to MCP AI plugin requests and responses" as not supported,
+and instructs that the plugin must not be configured together with other AI
+plugins on the same Service or Route. The AI Policies attachable to an
+[AI MCP Server](https://developer.konghq.com/ai-gateway/entities/ai-mcp-server/)
+entity are rate limiting, request and response transformation, logging and
+OAuth-based ACL gating — access control and volumetry, not content inspection.
+`ai-custom-guardrail` therefore cannot see an MCP tool call, and neither can this
+integration.
+
+The limit is on the Kong side alone. Prisma AIRS already scans MCP: API Intercept
+accepts a `contents[].tool_event` object — `metadata.ecosystem`, `method`,
+`server_name`, `tool_invoked`, plus `input` and `output` — on the same
+`/v1/scan/sync/request` endpoint used here, and reports its findings under
+`tool_detected`, covering tool definition poisoning and credential leakage. See
+[Detect MCP Threats](https://docs.paloaltonetworks.com/ai-runtime-security/administration/api-intercept-create-configure-security-profile/detect-mcp-threats).
+Until Kong exposes an extension point on MCP traffic, covering MCP means calling
+Prisma AIRS from outside the gateway — for example the
+[Prisma AIRS MCP Server](https://docs.paloaltonetworks.com/ai-runtime-security/activation-and-onboarding/prisma-airs-mcp-server-for-centralized-ai-agent-security/understanding-the-prisma-airs-mcp-server),
+where the agent invokes the scan itself. Kong's per-tool ACLs remain useful next
+to that, but they restrict which tool may be called, not what travels inside it.
+
+### Tool calls on the LLM path are not confirmed
+
+A chat completion carrying `tools[]`, an assistant message carrying
+`tool_calls[].function.arguments`, or a `role: "tool"` result is a different
+question from MCP, and it is open. `text_source` accepts `last_message`,
+`concatenate_user_content` and `concatenate_all_content`, and no published Kong
+documentation states what `$(content)` contains in each case beyond message text.
+Until that is observed on a live gateway, do not assume function-calling
+arguments are scanned. It is listed under
+[Verification status](#verification-status) below.
+
+### Already stated elsewhere
+
+Response scanning buffers and is incompatible with SSE streaming, and the
+`OUTPUT` phase carries no prompt context alongside the response it scans — both
+are covered under [Design decisions](#design-decisions).
+
 ## Requirements
 
 | | |
@@ -134,13 +182,17 @@ published Kong plugin schema and the Prisma AIRS OpenAPI client — see
 ./scripts/run-lua-tests.sh
 ```
 
-Two things remain to be confirmed against a live gateway, and are called out in
-the configuration comments:
+Three things remain to be confirmed against a live gateway. The first two are
+also called out in the configuration comments:
 
 - the explicit-argument call form `$(airs_contents(content))`, which follows the
   plugin documentation but appears in no published example;
 - whether Kong delivers the guardrail response as a table or a string in the
-  `OUTPUT` phase. The verdict function handles both.
+  `OUTPUT` phase. The verdict function handles both;
+- what `$(content)` actually contains under `concatenate_all_content` — in
+  particular whether tool definitions, tool call arguments and tool results are
+  included, which decides whether function calling is scanned at all. See
+  [Scope and limits](#scope-and-limits).
 
 Validate in a non-production environment before this reaches production traffic.
 
