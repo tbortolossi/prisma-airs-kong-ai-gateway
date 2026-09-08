@@ -11,9 +11,18 @@ classes are:
 
 - a configuration that fails open where it claims to fail closed;
 - a secret handling pattern that exposes the Prisma AIRS API key;
-- a documented procedure that weakens the security posture of a gateway.
+- a documented procedure that weakens the security posture of a gateway;
+- a block message that leaks Prisma AIRS detection detail (category, detection
+  name) to the calling client. The client is meant to see only a fixed, generic
+  message and, when present, `scan_id` — naming the detection to the caller is
+  an evasion oracle, letting an attacker use the block response itself to map
+  which inputs trip which detector;
+- a template or function change that could ship plugin configuration — the API
+  key included, after vault resolution — to the guardrail service as scanned
+  text, for example if a Lua function accepts a table where it should only
+  accept a string and serialises it into the Prisma AIRS payload.
 
-All three are in scope. Please include the file and the concrete failure path.
+All five are in scope. Please include the file and the concrete failure path.
 
 ## What this repository is not
 

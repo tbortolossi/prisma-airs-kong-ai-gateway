@@ -33,14 +33,18 @@ AIRS schema, not that Kong accepts the configuration.
 ## Both config files, always
 
 `config/kongctl/airs-guardrail.yaml` and `config/deck/airs-guardrail.yaml` carry
-an identical `config` block. Any change to guardrail logic lands in both, in the
-same commit. `scripts/run-lua-tests.sh` fails the build if the verdict functions
-drift apart.
+an identical `config` block per guardrail instance. Any change to guardrail
+logic lands in both, in the same commit. `scripts/run-lua-tests.sh` fails the
+build if the `airs_verdict` or `airs_contents` copies drift apart, between the
+two files or between the copies inside one file; `scripts/check-plugin-schema.py
+--parity` fails the build if the surrounding `config` blocks themselves drift.
 
 ## Before you open a pull request
 
 ```bash
-./scripts/run-lua-tests.sh          # 17 assertions, no gateway needed
+./scripts/run-lua-tests.sh                        # 55 assertions, no gateway needed
+python3 scripts/check-plugin-schema.py --parity   # kongctl/deck config blocks match
+python3 scripts/check-plugin-schema.py --schema   # every key/enum exists in the live schema
 shellcheck scripts/*.sh
 ```
 
@@ -57,7 +61,16 @@ Then check:
 - YAML: two-space indent, no tabs, comments in English.
 - Lua verdict functions: guard clause first, then detection extraction, then
   verdict. Under 40 lines. No external requires, except the guarded `cjson.safe`
-  decode in the `OUTPUT` verdict function, which must fail closed.
+  decode, attempted when `$(resp)` arrives as a string, which must fail closed.
+  Only `action == "allow"` lets a request through; any other action, a missing
+  or malformed verdict, or a degraded scan category (`error` / `timeout`) blocks.
+  `airs_verdict` returns `{ block, block_message, detail }`: `block_message` is
+  always the fixed, generic client-facing text, never the category or a
+  detection name; those go in `detail`, which callers wire to
+  `metrics.block_reason` / `metrics.block_detail`, never to `response.block_message`.
+- Every copy of `airs_verdict` and every copy of `airs_contents` must be
+  byte-identical, across both config files and across every guardrail instance
+  within a file. `scripts/run-lua-tests.sh` enforces this.
 - Shell: `set -u`, `shellcheck` clean. No `set -e` in `test-airs.sh` — a non-zero
   curl must not abort the remaining cases.
 - Documentation: English, and every external claim carries a link.
