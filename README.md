@@ -223,7 +223,21 @@ the time Prisma AIRS answers, the flagged segment has already reached the
 client (measured: 108 characters received by the client, more than the
 102-character segment that triggered the block). What happens next depends on the model provider driver.
 On the `ollama` driver, the stream is cut: no further chunks and no `finish_reason` chunk, on top of an HTTP 200 already sent. On the `openai` driver, the stream ends cleanly: a last chunk carries `finish_reason: "blocked_by_guard"` with the generic block message as its `delta.content`, followed by `data: [DONE]`; under `rejection_mode: verbose` that chunk also carries a `guardrail_result` object (`code: GUARDRAIL_BLOCKED`, reason "response blocked by guardrails"), no category or detection.
-Measured 2026-09-14 on both drivers against the same local model. So streaming coverage prevents what follows a detection, not the
+Measured 2026-09-14 on both drivers against the same local model.
+
+Measured 2026-09-14 with a guardrail answering `block` for every segment,
+`OUTPUT` phase, default buffer, on a local model producing about 450
+characters per second: with a 3 s verdict latency the whole 1005-character
+stream reached the client and ended with `finish_reason: stop`, nine block
+verdicts arriving after the end; with 0.5 s (the order of a Prisma AIRS round
+trip) about 320 characters reached the client before the cut; with 0.05 s,
+about 120. The per-segment scans are asynchronous: they did not slow the
+stream (2.3 s with nine scans of 0.5 s each, against 2.2 s with no guardrail),
+which is also why they cannot hold it back. What a stream leaks before a block
+is roughly the model's output rate multiplied by the scan latency, plus one
+segment.
+
+So streaming coverage prevents what follows a detection, not the
 detection itself, and each segment is scanned without the context of the ones
 before it. See [Design decisions](#design-decisions) for the two ways to
 handle it.
@@ -441,23 +455,27 @@ receive. The key never transits the SaaS control plane and never appears in
 version control.
 
 **Streaming, and what to do about it.** Response scanning does run on a
-stream — see
-[Streaming responses are scanned in segments](#streaming-responses-are-scanned-in-segments) —
-but only in per-segment detect-after-delivery scans, and a block on a flagged
-segment cannot stop that segment from reaching the client. That is a weaker
-guarantee than the one-shot scan of a non-streamed response, so the shipped
-configuration does not rely on it for a model where response coverage
-matters:
+stream, see
+[Streaming responses are scanned in segments](#streaming-responses-are-scanned-in-segments),
+but as per-segment, asynchronous, detect-after-delivery scans: a block cannot
+stop the flagged segment, and what leaks before the cut grows with the model's
+output rate and the scan latency. Two postures, one line apart on the AI Model:
 
-- `airs-scan` is attached together with `response_streaming: deny` — on the AI
-  Model (kongctl) or on the `ai-proxy-advanced` policy (deck) — so a
-  `stream: true` request is refused before it reaches the model or the
-  guardrail
-  ([AI Gateway streaming](https://developer.konghq.com/ai-gateway/streaming/)).
-  Measured: HTTP 400,
+- **Simple mode, the default.** One policy, `airs-scan`, on every model,
+  `response_streaming` left at its default `allow`. Non-streamed responses are
+  scanned whole before delivery. Streamed responses get prompt scanning before
+  the model and best-effort response scanning: every segment is scanned and
+  logged in Strata Cloud Manager, the stream is cut once a verdict says block,
+  and the client is not slowed down. Nothing to decide per model, nothing for
+  a caller to break.
+- **Strict mode.** `airs-scan` together with `config.response_streaming: deny`
+  on models where no unscanned character may reach the client: a `stream: true`
+  request is refused before it reaches the model or the guardrail
+  ([AI Gateway streaming](https://developer.konghq.com/ai-gateway/streaming/)),
+  measured HTTP 400
   `{"error":{"message":"response streaming is not enabled for this LLM"}}`.
-- models that must stream take `airs-prompt-scan` instead, `response_streaming`
-  left at its default, and carry prompt-only coverage, stated plainly.
+  Models that must stream under strict mode take `airs-prompt-scan` instead,
+  prompt-only coverage stated plainly.
 
 `response_buffer_size` is no longer set in either policy: the schema default
 (100) applies, and the field only has an effect on a streamed response in the

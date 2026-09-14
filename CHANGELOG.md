@@ -8,6 +8,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Streaming posture is now presented as two modes, one line apart on the AI
+  Model. Simple mode, the default: `airs-scan` on every model with
+  `response_streaming` left at `allow`; non-streamed responses scanned whole
+  before delivery, streamed responses scanned per segment on a best-effort,
+  detect-after-delivery basis. Strict mode: `response_streaming: deny` on
+  models where no unscanned character may reach the client, `airs-prompt-scan`
+  on models that must stream. The kongctl attachment example now shows the
+  `deny` line commented, as the strict option.
+- Measured what a stream leaks before a block, with a guardrail blocking every
+  segment on a local model at about 450 characters per second: with a 3 s
+  verdict latency the whole 1005-character answer was delivered and the
+  stream ended normally; with 0.5 s about 320 characters; with 0.05 s about
+  120. The per-segment scans are asynchronous and do not slow the stream
+  (2.3 s with nine 0.5 s scans against 2.2 s without a guardrail), which is
+  why they cannot hold it back. README, guide and `docs/lab-streaming.md`
+  carry the numbers and the rule of thumb: output rate times scan latency,
+  plus one segment.
+
+### Changed
+
 - The terminal chunk of a blocked stream is driver-dependent, measured
   2026-09-14 on the same local model through two drivers: the `ollama`
   driver cuts the stream with no `finish_reason` chunk, as every earlier

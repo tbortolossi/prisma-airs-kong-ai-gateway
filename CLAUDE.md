@@ -144,9 +144,12 @@ no competitive positioning. Working notes go in `CLAUDE.local.md`.
   responses are always one call carrying the whole body, whatever the buffer
   value. The `65536` this repository shipped is what produced "no OUTPUT call"
   on 2026-09-08. The shipped config therefore no longer sets
-  `response_buffer_size`, pairs `airs-scan` with `response_streaming: deny`
-  on the model (kongctl) or on `ai-proxy-advanced` (deck), and keeps
-  `airs-prompt-scan` for models that must stream. Never reintroduce a large
+  `response_buffer_size`. Two documented postures: simple mode leaves
+  `response_streaming` at `allow` (streams scanned per segment,
+  asynchronously, best effort: roughly output rate x scan latency leaks
+  before a cut, LAB-VERIFIED 2026-09-14); strict mode sets
+  `response_streaming: deny` on the model (kongctl) or on `ai-proxy-advanced`
+  (deck) and gives models that must stream `airs-prompt-scan`. Never reintroduce a large
   buffer value "to scan a whole streamed answer at once": it scans nothing.
 - The published schema page lags the data plane. The 2.0.3 data plane
   (Kong Gateway 3.14.0.3) also has `rejection_mode` (`none` / `stealth` /
