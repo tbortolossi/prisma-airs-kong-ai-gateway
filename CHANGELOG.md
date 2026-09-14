@@ -8,6 +8,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `config/deck/airs-guardrail.yaml` and `config/deck/airs-error-sanitizer.yaml`
+  are LAB-VERIFIED: applied with deck to a Konnect classic control plane with a
+  `kong/kong-gateway:3.14.0.14` data plane, the model target pointed at a
+  local model. `scripts/test-airs.sh` 5/5 twice, `stream: true` refused on
+  the service route, the streaming route streaming with its route-level
+  `airs-prompt-scan` blocking a malicious prompt, the `OUTPUT` phase blocking
+  a flagged response, and the sanitizer turning the outage HTTP 500 into the
+  generic body. Procedure in `docs/lab-classic-control-plane.md`.
+- `scripts/test-airs.sh`, case 5 asks for an answer in prose. Measured: one
+  run in eight was blocked on the response leg with category `source_code`
+  because the model answered with a code snippet; five consecutive runs pass
+  with the new wording. The comment says what a block on that case means.
+
+### Added
+
+- Measured behaviour at the Prisma AIRS payload limit: Kong forwards the
+  whole scanned text (3.58 million characters, no truncation); a 2.05 MB
+  prompt is scanned; a 3.5 MB one gets HTTP 413 from Prisma AIRS, turned into
+  a fail-closed HTTP 500 in 1.2 s. README, guide (`text_source` trade-off
+  and a troubleshooting row), `docs/sources.md` and `CLAUDE.md`.
+- Concurrency check: twenty parallel requests with distinct markers produce
+  twenty prompt and twenty response scans with no payload mixing, and twenty
+  parallel requests on the live tenant with every third one malicious get
+  the right verdict each. README, Verification status.
+- `docs/lab-classic-control-plane.md`.
+
+### Changed
+
 - Streaming posture is now presented as two modes, one line apart on the AI
   Model. Simple mode, the default: `airs-scan` on every model with
   `response_streaming` left at `allow`; non-streamed responses scanned whole

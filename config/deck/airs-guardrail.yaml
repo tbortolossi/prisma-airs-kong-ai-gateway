@@ -23,7 +23,11 @@
 # rest of the service keeps prompt-and-response coverage.
 #
 # VERIFICATION STATUS: see the header of config/kongctl/airs-guardrail.yaml
-# and README.md, "Verification status".
+# and README.md, "Verification status". This file itself is LAB-VERIFIED
+# 2026-09-14 on a Konnect classic control plane with a
+# kong/kong-gateway:3.14.0.14 data plane (scripts/test-airs.sh 5/5, service
+# route refuses stream: true, streaming route streams with prompt scanning,
+# OUTPUT phase blocks), the model target pointed at a local model.
 # =============================================================================
 
 _format_version: "3.0"

@@ -13,9 +13,12 @@
 # VERIFICATION STATUS
 #   DOCUMENTED   : post-function config.header_filter / config.body_filter
 #                  https://developer.konghq.com/plugins/post-function/
-#   SYNTHESIZED  : this transposition. The kongctl variant is LAB-VERIFIED
-#                  2026-09-14; the same plugin on a classic control plane has
-#                  not been exercised.
+#   LAB-VERIFIED : 2026-09-14 on a Konnect classic control plane with a
+#                  kong/kong-gateway:3.14.0.14 data plane: with the guardrail
+#                  unreachable the client got HTTP 500
+#                  {"error":{"message":"Guardrail unavailable"}} instead of the
+#                  connection-refused text; the kongctl variant was verified
+#                  the same day on AI Gateway 2.0.3.
 # =============================================================================
 
 _format_version: "3.0"
