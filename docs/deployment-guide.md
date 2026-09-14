@@ -215,7 +215,7 @@ deck gateway sync config/deck/airs-guardrail.yaml \
 
 Add **one** reference to the `policies` array of the AI Model you want to protect, then re-apply that model definition. Do not reference both policies on the same model: Kong runs a single instance of a given plugin per request, so a second guardrail reference does not add coverage, and `airs-scan` already covers both directions.
 
-Use `airs-scan`, together with `config.response_streaming: deny`, for models that must always return a complete, scanned response. Use `airs-prompt-scan` for models that need to stream; their responses are not covered by response scanning. See Operational considerations.
+Two postures exist, one line apart. **Simple mode:** attach `airs-scan` to every model and leave `response_streaming` at its default, `allow`. Non-streamed responses are scanned whole before delivery; streamed responses get prompt scanning before the model and best-effort, per-segment response scanning that does not slow the stream but cannot stop the segment already delivered. **Strict mode:** attach `airs-scan` together with `config.response_streaming: deny` on models where no unscanned character may reach the client, and `airs-prompt-scan` on models that must stream, with prompt-only coverage stated plainly. See Operational considerations for the measured difference.
 
 ```yaml
 ai_gateway_models:
@@ -226,7 +226,7 @@ ai_gateway_models:
     formats:
       - type: openai
     config:
-      response_streaming: deny   # airs-scan needs a complete response to scan
+      response_streaming: deny   # strict mode; omit the line for simple mode
     policies:
       - !ref airs-scan            # prompt and response
       # - !ref airs-prompt-scan   # prompt only, for streaming models
@@ -317,7 +317,9 @@ Case 5 matters as much as the blocking cases. It is the one that reveals an over
 
 The supplied configuration no longer sets `response_buffer_size`, so the schema default of 100 applies. A large value is worse for a streamed response, not safer: a typical short answer stays under a large threshold for its entire duration and is never scanned, which looks like coverage but delivers none. The default gives visible, partial coverage instead of silent, complete gaps.
 
-Given this, the supplied configuration denies streaming on models attached to `airs-scan`: `config.response_streaming: deny` on the AI Model ([AI Gateway streaming](https://developer.konghq.com/ai-gateway/streaming/)). A `stream: true` request to such a model then gets `HTTP 400` with `{"error":{"message":"response streaming is not enabled for this LLM"}}`, before any guardrail call, and every response that does reach the client has been scanned whole. Attach `airs-prompt-scan` to models that must serve streaming responses; their responses keep prompt-only coverage and are not response-scanned at all. Prompt scanning itself is unaffected by streaming either way, since it runs before the model is called.
+How much a stream leaks before a block depends on the model's output rate and on the scan latency, because the per-segment scans are asynchronous: they do not slow the stream, so they cannot hold it back either. Measured with a guardrail blocking every segment on a local model producing about 450 characters per second: with a 3 s verdict latency the whole 1005-character answer reached the client and the stream ended normally, every block verdict arriving after the end; with 0.5 s, the order of a Prisma AIRS round trip, about 320 characters reached the client before the cut; with 0.05 s, about 120. Read it as roughly output rate times scan latency, plus one segment.
+
+That gives two postures, one line apart on the AI Model. **Simple mode** leaves `response_streaming` at its default, `allow`: one policy, `airs-scan`, on every model; non-streamed responses are scanned whole before delivery, streamed responses get prompt scanning before the model and best-effort response scanning, every segment logged in Strata Cloud Manager and the stream cut once a verdict says block. **Strict mode** adds `config.response_streaming: deny` ([AI Gateway streaming](https://developer.konghq.com/ai-gateway/streaming/)) on models where no unscanned character may reach the client: a `stream: true` request then gets `HTTP 400` with `{"error":{"message":"response streaming is not enabled for this LLM"}}`, before any guardrail call, and every response that does reach the client has been scanned whole. Under strict mode, models that must stream take `airs-prompt-scan`, prompt-only coverage stated plainly. Prompt scanning itself is unaffected by streaming either way, since it runs before the model is called.
 
 **Block response format.** The supplied configuration leaves `config.rejection_mode` at its default, `none`: a block is `HTTP 400` with `{"error":{"message":"<block_message>"}}`, the contract this guide assumes throughout. Two other values exist on Kong AI Gateway 2.0.1 and later data planes. `verbose` returns `HTTP 403` with a structured body carrying `code: GUARDRAIL_BLOCKED` and the message under `reason`, useful if your client parses a machine-readable code rather than free text. `stealth` returns a generic `HTTP 403` `{"error":{"message":"request forbidden"}}` and drops both the block message and the `scan_id`, which also removes your ability to correlate the block with the Prisma AIRS scan log. `rejection_mode` is not yet in the published plugin schema page, so it ships commented out in both configuration files; read the comment next to it before enabling it.
 

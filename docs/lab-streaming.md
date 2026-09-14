@@ -157,6 +157,17 @@ stream ends, so they are never sent to the guardrail. This is the same
 below-threshold tail as Step 4, shown on the one word designed to trigger a
 block if it had actually been scanned.
 
+## Step 5b - Measure the race between delivery and verdict (optional)
+
+Point `airs-scan` at a guardrail that answers `block` for every `OUTPUT`
+segment after a fixed delay (the echo server has no delay option; any small
+HTTP server that sleeps before answering the Prisma AIRS shape will do), keep
+the default buffer, and stream a long answer while timestamping each chunk as
+it arrives. Repeat with a delay of the order of your Prisma AIRS round trip
+(0.5 s) and with a delay longer than the whole stream (3 s). Compare the
+number of characters the client received before the cut, or whether it was cut
+at all, with the model's output rate.
+
 ## Step 6 - Confirm `response_streaming: deny` refuses the request outright
 
 Set `config.response_streaming: deny` on the model under test and re-apply
@@ -212,6 +223,14 @@ completed stream ends with `finish_reason: stop`; no `[DONE]` line was seen on
 either, so its absence is not the signal), and the HTTP
 status was already `200`. The flagged segment reached the client; only what
 would have followed it was prevented.
+
+**Race between delivery and verdict (Step 5b).** Guardrail blocking every
+segment, `OUTPUT` phase, default buffer, local model at about 450 characters
+per second. Verdict latency 3 s: 1005 characters and 234 chunks delivered,
+stream ended with `finish_reason: stop`, all nine block verdicts arrived after
+the end. Latency 0.5 s: about 320 characters delivered before the cut. Latency
+0.05 s: about 120. The scans are asynchronous, the stream is not slowed down
+(2.3 s with nine 0.5 s scans against 2.2 s without a guardrail).
 
 **`response_streaming: deny`.** A `stream: true` request to a model carrying
 this setting received `HTTP 400` with

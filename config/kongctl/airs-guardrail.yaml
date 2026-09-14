@@ -94,9 +94,10 @@ ai_gateway_policies:
   # it reaches the client. On a non-streamed response the output is one scan
   # of the whole body. On a streamed response it is one scan per segment of
   # about response_buffer_size bytes, the flagged segment already delivered
-  # by the time it is blocked (LAB-VERIFIED 2026-09-14). Pair this policy
-  # with response_streaming: deny on the model (attachment extract below);
-  # models that must stream get airs-prompt-scan instead.
+  # by the time it is blocked (LAB-VERIFIED 2026-09-14). Simple mode leaves
+  # streaming allowed and accepts that; strict mode pairs this policy with
+  # response_streaming: deny on the model (attachment extract below) and
+  # gives models that must stream airs-prompt-scan instead.
   # ---------------------------------------------------------------------------
   - ref: airs-scan
     ai_gateway: !lookup { id: !env AI_GATEWAY_ID }
@@ -435,14 +436,19 @@ ai_gateway_policies:
 #     formats:
 #       - type: openai
 #     config:
-#       # Refuse stream: true at the model, so airs-scan always sees the whole
-#       # response in one scan and nothing reaches the client before the
-#       # verdict. DOCUMENTED https://developer.konghq.com/ai-gateway/streaming/
-#       # (allow | deny | always). LAB-VERIFIED 2026-09-14: a stream: true
-#       # request gets HTTP 400 {"error":{"message":"response streaming is not
-#       # enabled for this LLM"}} before any guardrail call. Drop this line and
-#       # reference airs-prompt-scan instead for a model that must stream.
-#       response_streaming: deny
+#       # Simple mode (default): leave response_streaming at allow. Non-streamed
+#       # responses are scanned whole before delivery; streamed responses get
+#       # prompt scanning plus best-effort per-segment response scanning that
+#       # does not slow the stream and cannot stop the segment already
+#       # delivered (LAB-VERIFIED 2026-09-14: roughly output rate x scan
+#       # latency, plus one segment, leaks before the cut).
+#       # Strict mode: uncomment the line below. A stream: true request is then
+#       # refused with HTTP 400 {"error":{"message":"response streaming is not
+#       # enabled for this LLM"}} before any guardrail call (DOCUMENTED
+#       # https://developer.konghq.com/ai-gateway/streaming/, allow | deny |
+#       # always; LAB-VERIFIED 2026-09-14), and models that must stream take
+#       # airs-prompt-scan instead.
+#       # response_streaming: deny
 #     policies:
 #       - !ref airs-scan            # prompt and response
 #       # - !ref airs-prompt-scan   # prompt only, for streaming models

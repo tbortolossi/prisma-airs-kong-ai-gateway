@@ -45,6 +45,9 @@ services:
           # reaches the client before its verdict. DOCUMENTED on the AI Proxy
           # Advanced reference: enum allow | deny | always, default allow.
           # Route 2 overrides this with its own instance set to allow.
+          # Strict mode: stream: true refused on this service. For simple mode
+          # (streams allowed, best-effort per-segment response scanning, see the
+          # README) remove this line and the dedicated streaming route below.
           response_streaming: deny
           targets:
             - route_type: llm/v1/chat
