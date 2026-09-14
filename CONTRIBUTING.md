@@ -53,6 +53,7 @@ shellcheck scripts/*.sh
 Then check:
 
 - both config files updated in step;
+- `stop_on_error` still `true` and `continue_on_detection` still commented out in `config/` (CI refuses otherwise);
 - `docs/sources.md` updated if a new upstream reference was used;
 - `CHANGELOG.md` updated for anything user-visible;
 - verification tags reviewed, and anything downgraded flagged in the PR body;

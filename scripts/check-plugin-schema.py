@@ -21,6 +21,7 @@ Two independent checks, either or both of which can be requested:
 Needs only PyYAML beyond the standard library.
 """
 import argparse
+import glob
 import json
 import re
 import sys
@@ -114,6 +115,12 @@ def collect_deck_plugins(doc: Any) -> list[tuple[str, dict]]:
 
 
 def run_parity() -> bool:
+    # Every YAML under config/ must at least parse with the kongctl tags, so an
+    # optional file that is not part of the parity pair is still checked.
+    for extra in sorted(glob.glob("config/**/*.yaml", recursive=True)):
+        if extra not in (KONGCTL_FILE, DECK_FILE):
+            load_yaml(extra)
+            print(f"ok - {extra}: parses")
     kongctl_doc = load_yaml(KONGCTL_FILE)
     deck_doc = load_yaml(DECK_FILE)
     kongctl = collect_kongctl_policies(kongctl_doc)

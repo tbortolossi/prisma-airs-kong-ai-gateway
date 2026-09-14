@@ -39,6 +39,8 @@ docs/lab-tool-calls.md               lab procedure: is function calling scanned?
 docs/lab-streaming.md                lab procedure: is a streamed response scanned, and how?
 config/kongctl/airs-guardrail.yaml   AI Gateway 2.x
 config/deck/airs-guardrail.yaml      classic Gateway control plane
+config/kongctl/airs-error-sanitizer.yaml   optional: generic body on a guardrail-call failure
+config/deck/airs-error-sanitizer.yaml      same, classic control plane (SYNTHESIZED)
 scripts/test-airs.sh                 end-to-end suite, needs a live gateway
 scripts/run-lua-tests.sh             offline verdict function tests
 scripts/test-verdict-functions.lua   the assertions those tests run

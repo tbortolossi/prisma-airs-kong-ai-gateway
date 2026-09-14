@@ -106,7 +106,9 @@ services:
           #   proxy_config           forward proxy for the guardrail call: http_proxy_host /
           #                          _port, https_proxy_host / _port, auth_username /
           #                          auth_password (referenceable), no_proxy. LAB-VERIFIED
-          #                          2026-09-14 for the http pair (both phases relayed).
+          #                          2026-09-14 for both pairs: http (both phases relayed by a
+          #                          logging proxy) and https (real Prisma AIRS endpoint
+          #                          through a CONNECT proxy, test-airs.sh 5/5).
           # rejection_mode: verbose
           # continue_on_detection: true
           # log_blocked_content: false
