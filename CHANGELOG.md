@@ -6,6 +6,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- The terminal chunk of a blocked stream is driver-dependent, measured
+  2026-09-14 on the same local model through two drivers: the `ollama`
+  driver cuts the stream with no `finish_reason` chunk, as every earlier
+  round saw; the `openai` driver ends it with a chunk carrying
+  `finish_reason: "blocked_by_guard"` and the generic block message, then
+  `data: [DONE]`, and under `rejection_mode: verbose` a `guardrail_result`
+  object without category or detection. README, `docs/deployment-guide.md`,
+  `docs/lab-streaming.md` and `CLAUDE.md` no longer describe the cut as the
+  only behaviour, and the item leaves "What remains unconfirmed"; what
+  remains is the behaviour of the other drivers.
+- Lab note: for the `openai` driver, a target's `upstream_url` is the full
+  endpoint URL (`.../v1/chat/completions`); a base URL answers 405 and a
+  base URL ending in `/v1` answers 404 from the model server. The `ollama`
+  driver takes a base URL.
+
 ### Added
 
 - `config/kongctl/airs-error-sanitizer.yaml`, an optional `post-function`

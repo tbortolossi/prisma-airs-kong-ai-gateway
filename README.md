@@ -221,9 +221,9 @@ reached a scan.
 A block verdict on a streamed segment arrives too late for that segment: by
 the time Prisma AIRS answers, the flagged segment has already reached the
 client (measured: 108 characters received by the client, more than the
-102-character segment that triggered the block). The stream is then cut — no
-further chunks and no `finish_reason` chunk, on top of an HTTP 200
-already sent. So streaming coverage prevents what follows a detection, not the
+102-character segment that triggered the block). What happens next depends on the model provider driver.
+On the `ollama` driver, the stream is cut: no further chunks and no `finish_reason` chunk, on top of an HTTP 200 already sent. On the `openai` driver, the stream ends cleanly: a last chunk carries `finish_reason: "blocked_by_guard"` with the generic block message as its `delta.content`, followed by `data: [DONE]`; under `rejection_mode: verbose` that chunk also carries a `guardrail_result` object (`code: GUARDRAIL_BLOCKED`, reason "response blocked by guardrails"), no category or detection.
+Measured 2026-09-14 on both drivers against the same local model. So streaming coverage prevents what follows a detection, not the
 detection itself, and each segment is scanned without the context of the ones
 before it. See [Design decisions](#design-decisions) for the two ways to
 handle it.
@@ -577,8 +577,9 @@ four more items:
   the schema default of 100, 69 calls at `response_buffer_size: 1`, and zero
   calls at `response_buffer_size: 65536` — the value this repository shipped
   until this round, which is why the 2026-09-08 run saw nothing. A block on a
-  flagged segment cuts the stream after that segment has already reached the
-  client, with no terminal chunk, on top of an HTTP 200 already sent. See
+  flagged segment ends the stream after that segment has already reached the
+  client, on top of an HTTP 200 already sent; how it ends depends on the
+  driver (sixth round, below). See
   [Scope and limits](#scope-and-limits).
 - **`metrics.block_detail` must be a Lua table.** As a string it produced a
   data-plane warning on every request, in both phases, regardless of the
@@ -648,10 +649,27 @@ A fifth round, the same day, closed two of the remaining items:
   `handle_unexpected` switches
   ([exit-transformer](https://developer.konghq.com/plugins/exit-transformer/)
   hooks `kong.response.exit()` only).
-- **The OpenAI-driver hypothesis for the `blocked_by_guard` chunk could not be
-  tested.** A second model provider of type `openai` pointed at the local
-  model's OpenAI-compatible endpoint was accepted by the control plane, but
-  every request to its route answered a plain-text 404 from the data plane.
+- **The OpenAI-driver hypothesis for the `blocked_by_guard` chunk needed one
+  more try.** A second model provider of type `openai` pointed at the local
+  model's OpenAI-compatible endpoint answered 404 then 405 until
+  `upstream_url` carried the full endpoint path: on that driver the field is
+  the complete URL, `http://<host>/v1/chat/completions`, where the `ollama`
+  driver takes a base URL. Settled in the sixth round, below.
+
+A sixth round, the same day, settled the terminal chunk:
+
+- **`finish_reason: "blocked_by_guard"` exists, and it is driver-dependent.**
+  Same local model, same blocking guardrail, `guarding_mode: OUTPUT`, default
+  buffer. Through the `ollama` driver the stream is cut with no terminal
+  chunk, as measured in every earlier round. Through the `openai` driver the
+  first segment is delivered, then a last chunk arrives with
+  `finish_reason: "blocked_by_guard"` and the generic block message as
+  `delta.content`, then `data: [DONE]`. With `rejection_mode: verbose` the
+  last chunk carries `delta.content: "response blocked by guardrails"` and a
+  `guardrail_result` object (`plugin`, `reason`, `code: GUARDRAIL_BLOCKED`,
+  `type: guardrail_rejected`), with no category or detection name. In both
+  cases the flagged segment has already reached the client. See
+  [Streaming responses are scanned in segments](#streaming-responses-are-scanned-in-segments).
 
 What remains unconfirmed:
 
@@ -659,9 +677,9 @@ What remains unconfirmed:
   by the AI Gateway request-log channel, as distinct from the log-serializer
   export verified above and from the Requests analytics API, which carries
   none;
-- the `finish_reason: 'blocked_by_guard'` terminal chunk the schema text
-  describes for a blocked stream: still not observed, in two rounds of block
-  cases on the Ollama driver, and untested on an OpenAI-driver model.
+- whether other provider drivers (Anthropic, Bedrock, Gemini, Azure) end a
+  blocked stream the `openai` way or the `ollama` way: only those two were
+  measured.
 
 Validate in a non-production environment before this reaches production traffic.
 

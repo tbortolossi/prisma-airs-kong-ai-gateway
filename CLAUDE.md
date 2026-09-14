@@ -136,8 +136,11 @@ no competitive positioning. Working notes go in `CLAUDE.local.md`.
   `OUTPUT` phase does run on a `stream: true` response, in segments of about
   `response_buffer_size` bytes (schema default 100), one guardrail call per
   segment; content still below the threshold when the stream ends is never
-  scanned; a block cuts the stream after the flagged segment has already been
-  delivered, with no terminal chunk and HTTP 200 already sent. Non-streamed
+  scanned; a block ends the stream after the flagged segment has already been
+  delivered, HTTP 200 already sent; on the `ollama` driver it is cut with no
+  terminal chunk, on the `openai` driver a last chunk carries
+  `finish_reason: "blocked_by_guard"` then `data: [DONE]` (LAB-VERIFIED
+  2026-09-14, sixth round). Non-streamed
   responses are always one call carrying the whole body, whatever the buffer
   value. The `65536` this repository shipped is what produced "no OUTPUT call"
   on 2026-09-08. The shipped config therefore no longer sets
