@@ -386,7 +386,7 @@ example:
 
 ```json
 "custom-guardrail": {"mode": "BOTH",
-  "input_block_reason": "Blocked by Prisma AIRS [scan_id=lab-faulty-0009]",
+  "input_block_reason": "Blocked by Prisma AIRS [scan_id=<scan_id>]",
   "input_block_detail": {"category": "malicious", "reason": "malicious: injection", "detections": ["injection"]},
   "input_block_source": "ai-custom-guardrail", "input_processing_latency": 0, "output_processing_latency": 0},
 "guardrail_triggered": {"blocked_content": "", "block_source": "ai-custom-guardrail", "block_direction": "AI_GUARDRAIL_BLOCK_INPUT"}

@@ -357,7 +357,7 @@ On the Kong side, attach a logging policy, for example `file-log` or `http-log`,
 ```json
 "custom-guardrail": {
   "mode": "BOTH",
-  "input_block_reason": "Blocked by Prisma AIRS [scan_id=lab-faulty-0009]",
+  "input_block_reason": "Blocked by Prisma AIRS [scan_id=<scan_id>]",
   "input_block_detail": {"category": "malicious", "reason": "malicious: injection", "detections": ["injection"]},
   "input_block_source": "ai-custom-guardrail",
   "input_block_consumer_id": "unknown",
