@@ -182,6 +182,63 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   is never scanned. The `finish_reason: 'blocked_by_guard'` terminal chunk the
   schema text describes has still not been observed.
 
+### Fixed
+
+- README ("Design decisions > Fail closed by default...") and
+  `docs/deployment-guide.md` ("Fail-closed behaviour") both said that
+  switching to fail-open required changing `stop_on_error` and the Lua
+  verdict branches together, and that either change alone still blocked.
+  Measured against an unreachable guardrail endpoint: `stop_on_error: false`
+  alone returns HTTP 200 with the model's answer, unscanned, while both
+  phases log the failure as an error. The two mechanisms cover two different
+  failures: a failed call to Prisma AIRS, and a successful call with an
+  unusable verdict, not one shared switch. `docs/deployment-guide.md` is
+  another lot's file; the change there is described here, not applied by this
+  commit.
+- README (Verification status) no longer carries "whether `metrics.*`
+  templates are exported to Konnect's own AI analytics view" as unconfirmed.
+  They are exported through Kong's log serializer, as
+  `ai.proxy.custom-guardrail.*` and `ai.proxy.guardrail_triggered`, verified
+  with a `file-log` policy attached next to `airs-scan`. Konnect's own
+  Requests analytics API (`v2/api-requests`) still carries only the
+  `ai-proxy` entry; only the Konnect UI dashboards remain unchecked.
+
+### Changed
+
+- README (the "Generic block message" paragraph) and
+  `docs/deployment-guide.md` ("Observability"): both now point at attaching a
+  logging policy (`file-log`, `http-log`, ...) and reading
+  `ai.proxy.custom-guardrail.*`, replacing the earlier "export to Konnect
+  analytics still unconfirmed" statement. The Prisma AIRS scan log in Strata
+  Cloud Manager remains the record for detection detail.
+- The `proxy_config` comment in both `config/kongctl/airs-guardrail.yaml` and
+  `config/deck/airs-guardrail.yaml` now says verified, for an `http://`
+  guardrail URL through a forward proxy, rather than untested. Another lot's
+  file; described here for the record.
+- `scripts/test-airs.sh`'s closing note now states the expected HTTP 500 on a
+  guardrail outage. Another lot's file; described here for the record.
+
+### Added
+
+- README: a measured failure-mode table under "Fail closed by default"
+  (unreachable endpoint, a 5.0 s timeout, a guardrail HTTP 500, and a
+  non-JSON guardrail body), all HTTP 500 to the client carrying the internal
+  error text, the guardrail's own body relayed verbatim on the HTTP 500 case,
+  and `rejection_mode` shown to have no effect on any of them.
+- README and `docs/lab-streaming.md`: the streaming tail-gap example, a
+  419-character stream scanned in four segments totalling 408 characters, the
+  last 11 characters (the word that would have blocked the response) never
+  sent to Prisma AIRS, the stream completing HTTP 200. `docs/lab-streaming.md`
+  is another lot's file; described here for the record.
+
+### Known gap
+
+- A guardrail-call failure returns the internal error text to the client, and
+  on a bad-status failure relays the guardrail's own error body verbatim; this
+  is not configurable. The 500 body discloses that a guardrail step exists and
+  how it failed.
+- `finish_reason: 'blocked_by_guard'` still not observed on a blocked stream.
+
 ## [0.3.0] — 2026-09-08
 
 Second lab round on the same gateway, closing every question the first one left

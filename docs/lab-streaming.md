@@ -142,6 +142,19 @@ still reads `200`. The block happened after the flagged segment was already on
 the wire; the guardrail prevents what would have followed, not what already
 went out. This is the behaviour to design around, not a defect to wait out.
 
+## Step 5a - Block a word placed only at the very end of the answer (optional)
+
+Configure the echo server (or the policy pointed at it) to block only when the
+scanned segment contains a specific word, and prompt the model to place that
+word as the very last word of its answer. Keep `response_buffer_size` at the
+schema default (`100`). Repeat the streamed request from Step 3.
+
+Expect the stream to complete normally, `HTTP 200`, with no block: the final
+characters, holding the word, are shorter than the buffer threshold when the
+stream ends, so they are never sent to the guardrail. This is the same
+below-threshold tail as Step 4, shown on the one word designed to trigger a
+block if it had actually been scanned.
+
 ## Step 6 - Confirm `response_streaming: deny` refuses the request outright
 
 Set `config.response_streaming: deny` on the model under test and re-apply
@@ -181,6 +194,7 @@ the local model used for lab traffic.
 | `response_buffer_size: 100` (schema default) | 309 chars | 3 (101 / 104 / 103 chars) | 308 | 309 |
 | `response_buffer_size: 1` | same stream | 69 | close to the full stream | unchanged |
 | `response_buffer_size: 65536` | 275 chars | 0 | 0 | 275 |
+| Block word placed at the very end, schema default buffer | 419 chars | 4 (106 / 101 / 100 / 101 chars) | 408 | 419 (stream completed, `HTTP 200`, block never triggered) |
 | non-streamed request | any length | 1, carrying the whole body | full response | full response |
 
 At the schema default, streaming is scanned almost completely, in several
@@ -202,3 +216,8 @@ this setting received `HTTP 400` with
 `{"error":{"message":"response streaming is not enabled for this LLM"}}`, and
 no call reached the echo server. Non-streamed requests to the same model were
 unaffected.
+
+**`finish_reason='blocked_by_guard'`.** Not observed in either block case: not
+in the mid-stream block above, and not in the tail-word case (Step 5a), where
+no block triggered at all because the flagged word never crossed the buffer
+threshold.

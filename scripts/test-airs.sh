@@ -184,6 +184,8 @@ fi
 echo
 echo "Resilience test, to run separately: block egress to"
 echo "  service.api.aisecurity.paloaltonetworks.com:443"
-echo "then replay case 1. With fail-closed enabled it must be rejected."
+echo "then replay case 1. With fail-closed enabled (stop_on_error: true) it must be"
+echo "rejected with HTTP 500, {\"error\":{\"message\":\"failed to sanitize request:"
+echo "failed to invoke custom guardrail service: ...\"}} (measured 2026-09-14)." 
 
 exit "$unexpected"
