@@ -137,8 +137,10 @@ curl -sN -w '\nHTTP %{http_code}\n' "$KONG_PROXY_URL/v1/chat/completions" \
 ```
 
 Read the output directly: the first segment's worth of chunks arrives, the
-stream then stops without a chunk carrying a `finish_reason`, and the trailing `HTTP %{http_code}`
-still reads `200`. The block happened after the flagged segment was already on
+trailing `HTTP %{http_code}` still reads `200`, and how the stream ends depends
+on the model provider driver: on the `ollama` driver it stops without a chunk
+carrying a `finish_reason`; on the `openai` driver a last chunk carries
+`finish_reason: "blocked_by_guard"` and the block message, then `data: [DONE]`. The block happened after the flagged segment was already on
 the wire; the guardrail prevents what would have followed, not what already
 went out. This is the behaviour to design around, not a defect to wait out.
 
@@ -217,7 +219,15 @@ this setting received `HTTP 400` with
 no call reached the echo server. Non-streamed requests to the same model were
 unaffected.
 
-**`finish_reason='blocked_by_guard'`.** Not observed in either block case: not
-in the mid-stream block above, and not in the tail-word case (Step 5a), where
-no block triggered at all because the flagged word never crossed the buffer
-threshold.
+**`finish_reason='blocked_by_guard'`.** Driver-dependent. Not observed on the
+`ollama` driver in either block case (the mid-stream block above, and the
+tail-word case of Step 5a, where no block triggered at all). Observed on the
+`openai` driver, same local model reached through its OpenAI-compatible API
+(`upstream_url` set to the full `http://<host>/v1/chat/completions`, which is
+what that driver expects): 27 chunks delivered, then one chunk with
+`delta.content` set to the generic block message and
+`finish_reason: "blocked_by_guard"`, then `data: [DONE]`. With
+`rejection_mode: verbose`: 25 chunks, then a last chunk with
+`delta.content: "response blocked by guardrails"`, the same `finish_reason`,
+and a `guardrail_result` object carrying `plugin`, `reason`, `code:
+GUARDRAIL_BLOCKED` and `type: guardrail_rejected`, no category or detection.
