@@ -1,7 +1,7 @@
 # Deploying Prisma AIRS AI Runtime on Kong AI Gateway 2.x
 
 **Scope:** Konnect AI Gateway 2.x control plane (SaaS), self-managed data planes running in containers.
-**Outcome:** every prompt transiting the gateway is scanned by Prisma AIRS AI Runtime (API Intercept) and blocked on policy violation, and so is every non-streamed LLM response. A request that sets `stream: true` is not response-scanned: Kong skips the `OUTPUT` phase entirely, with no error and no warning. Scope your deployment around that before you start — see Operational considerations.
+**Outcome:** every prompt transiting the gateway is scanned by Prisma AIRS AI Runtime (API Intercept) and blocked on policy violation, and so is every LLM response. Models attached to the prompt-and-response policy have response streaming denied at the gateway, so their responses always arrive whole and get scanned in a single call. Models that must stream attach a prompt-only policy instead, so their responses are not covered by response scanning. See Operational considerations for the streaming trade-offs.
 **Change footprint:** two declarative policy objects and one environment variable. No custom plugin, no data plane image rebuild, no application code change.
 
 ---
@@ -185,7 +185,7 @@ At this point the policies exist but are not yet enforcing anything. They take e
 
 If your control plane is a classic Gateway control plane rather than an AI Gateway 2.x one, use [`config/deck/airs-guardrail.yaml`](../config/deck/airs-guardrail.yaml) instead. The `config` block is identical; only the wrapper differs.
 
-That file declares `airs-scan` at the Service level and `airs-prompt-scan` at the Route level, on a dedicated streaming route. This relies on Kong plugin precedence: a route-level instance of a plugin overrides the service-level instance of the same plugin for requests on that route, so the streaming route gets the `INPUT`-only variant while the rest of the service keeps prompt-and-response coverage. Route it accordingly if you change the paths.
+That file declares `airs-scan` at the Service level and `airs-prompt-scan` at the Route level, on a dedicated streaming route. The same two levels carry a matching pair of `ai-proxy-advanced` instances: `config.response_streaming: deny` at the Service level, and `config.response_streaming: allow` on the streaming Route ([AI Proxy Advanced reference](https://developer.konghq.com/plugins/ai-proxy-advanced/reference/)). This relies on Kong plugin precedence: a route-level instance of a plugin overrides the service-level instance of the same plugin for requests on that route, so the streaming route allows `stream: true` and gets the `INPUT`-only guardrail coverage, while every other route on the service cannot stream and keeps prompt-and-response coverage. Route it accordingly if you change the paths.
 
 **`deck gateway sync` deletes everything not in the file you give it.** Any configuration already in your Gateway that is not present in the declarative file is removed. Never run a bare sync of this repository's file against a control plane that already has other Services, Routes or plugins configured. Two safe paths:
 
@@ -215,7 +215,7 @@ deck gateway sync config/deck/airs-guardrail.yaml \
 
 Add **one** reference to the `policies` array of the AI Model you want to protect, then re-apply that model definition. Do not reference both policies on the same model: Kong runs a single instance of a given plugin per request, so a second guardrail reference does not add coverage, and `airs-scan` already covers both directions.
 
-Use `airs-scan` for models that return a complete response, and `airs-prompt-scan` for models that serve streaming responses, which are not response-scanned in any case — see Operational considerations.
+Use `airs-scan`, together with `config.response_streaming: deny`, for models that must always return a complete, scanned response. Use `airs-prompt-scan` for models that need to stream; their responses are not covered by response scanning. See Operational considerations.
 
 ```yaml
 ai_gateway_models:
@@ -225,6 +225,8 @@ ai_gateway_models:
     type: model
     formats:
       - type: openai
+    config:
+      response_streaming: deny   # airs-scan needs a complete response to scan
     policies:
       - !ref airs-scan            # prompt and response
       # - !ref airs-prompt-scan   # prompt only, for streaming models
@@ -236,6 +238,8 @@ ai_gateway_models:
     capabilities:
       - generate
 ```
+
+`config.response_streaming: deny` stops the client from setting `stream: true` on this model at all ([AI Gateway streaming](https://developer.konghq.com/ai-gateway/streaming/)), so a model carrying `airs-scan` always returns a complete response for the `OUTPUT` phase to scan. Drop this field, or set it to `allow`, only on a model that attaches `airs-prompt-scan` instead. See Operational considerations for what streamed response scanning looks like if you allow it anyway.
 
 A `!ref` resolves only against resources declared in the **same applied
 document**. Applying the model on its own leaves the reference unresolved, and
@@ -301,13 +305,23 @@ Case 5 matters as much as the blocking cases. It is the one that reveals an over
 2. Run real traffic for several days. Review the scan logs in Strata Cloud Manager and tune the profile there. Profile changes take effect without any Kong redeployment.
 3. Switch the Prisma AIRS profile to **block** once the false positive rate is acceptable.
 4. Extend `airs-prompt-scan` to the remaining models.
-5. On models that do not serve streaming responses, switch from `airs-prompt-scan` to `airs-scan` to add response scanning. Detach the old policy reference when you attach the new one — do not attach both.
+5. On models that do not need to stream, switch from `airs-prompt-scan` to `airs-scan`, and set `config.response_streaming: deny` on the model, to add response scanning. Detach the old policy reference when you attach the new one; do not attach both.
+
+**Gateway-side monitor mode.** The Prisma AIRS profile's alert-only mode, in step 1, is not the only way to run without enforcing. Setting `continue_on_detection: true` on the guardrail policy does the equivalent at the gateway: a block verdict still calls Prisma AIRS and the scan is still logged in Strata Cloud Manager, but the request is no longer rejected. It passes through with `HTTP 200`. Remove the field, or set it to `false`, to start enforcing. It has no effect on a failed call to Prisma AIRS itself, which `stop_on_error` governs independently. This field, together with `rejection_mode` and `log_blocked_content`, exists on Kong AI Gateway 2.0.1 and later data planes ([AI Gateway changelog](https://developer.konghq.com/ai-gateway/changelog/)) but is not yet in the published plugin schema page, so all three ship commented out in the configuration files.
 
 ---
 
 ## Operational considerations
 
-**Streaming.** A request that sets `stream: true` is not response-scanned. The `OUTPUT` phase is skipped entirely: the guardrail service receives no call, the complete stream reaches the client, and no error is raised. Prompt scanning still applies, so a streaming request keeps `INPUT` coverage and loses `OUTPUT` coverage, silently. Decide which of the two you want: either refuse `stream: true` at the gateway or in your client contract and keep `airs-scan` everywhere, or attach `airs-prompt-scan` to streaming models and record that those models have prompt-only coverage. What you must not do is attach `airs-scan` to a streaming model and assume the response is inspected. `config.response_buffer_size` (default 100 bytes, set to 65536 here) governs how much of a buffered, non-streamed response is accumulated before the guardrail call; it has no effect on a streamed response.
+**Streaming.** A streamed response is scanned, not skipped, but the coverage is different from a normal response. Under `airs-scan`, the `OUTPUT` phase runs on a `stream: true` response in segments of about `config.response_buffer_size` bytes (schema default 100), and each segment is its own synchronous call to Prisma AIRS. A long stream therefore carries many sequential scans, and each one is scanned without the content that came before it in the same response. Content still below the buffer threshold when the stream ends is never scanned at all, so a short streamed answer can complete having triggered zero scan calls. When a segment is flagged, the block verdict cuts the stream: no further chunks are sent, and there is no terminal chunk. The flagged segment itself has already reached the client, and the HTTP status is already `200`. A non-streamed response is always scanned in one call carrying the whole body, whatever `response_buffer_size` is set to; the field only matters when the response streams.
+
+The supplied configuration no longer sets `response_buffer_size`, so the schema default of 100 applies. A large value is worse for a streamed response, not safer: a typical short answer stays under a large threshold for its entire duration and is never scanned, which looks like coverage but delivers none. The default gives visible, partial coverage instead of silent, complete gaps.
+
+Given this, the supplied configuration denies streaming on models attached to `airs-scan`: `config.response_streaming: deny` on the AI Model ([AI Gateway streaming](https://developer.konghq.com/ai-gateway/streaming/)). A `stream: true` request to such a model then gets `HTTP 400` with `{"error":{"message":"response streaming is not enabled for this LLM"}}`, before any guardrail call, and every response that does reach the client has been scanned whole. Attach `airs-prompt-scan` to models that must serve streaming responses; their responses keep prompt-only coverage and are not response-scanned at all. Prompt scanning itself is unaffected by streaming either way, since it runs before the model is called.
+
+**Block response format.** The supplied configuration leaves `config.rejection_mode` at its default, `none`: a block is `HTTP 400` with `{"error":{"message":"<block_message>"}}`, the contract this guide assumes throughout. Two other values exist on Kong AI Gateway 2.0.1 and later data planes. `verbose` returns `HTTP 403` with a structured body carrying `code: GUARDRAIL_BLOCKED` and the message under `reason`, useful if your client parses a machine-readable code rather than free text. `stealth` returns a generic `HTTP 403` `{"error":{"message":"request forbidden"}}` and drops both the block message and the `scan_id`, which also removes your ability to correlate the block with the Prisma AIRS scan log. `rejection_mode` is not yet in the published plugin schema page, so it ships commented out in both configuration files; read the comment next to it before enabling it.
+
+**Forward proxy.** If your data planes reach the internet through an HTTP forward proxy, `config.proxy_config` exists for that: host, port and scheme for HTTP and HTTPS, optional proxy credentials, and a `no_proxy` list. It ships commented out for the same reason as `rejection_mode`, above, and has not been exercised against a live proxy in this repository.
 
 **Fail-closed behaviour.** As supplied, a Prisma AIRS outage blocks LLM traffic. This is the appropriate default for a regulated environment, but it is an availability dependency that must be accepted explicitly. Failing open requires two coordinated changes, made together, in **both** `config/kongctl/airs-guardrail.yaml` and `config/deck/airs-guardrail.yaml`:
 
@@ -322,7 +336,9 @@ Either change alone still blocks: `stop_on_error: false` only stops the plugin's
 
 **`text_source` trade-off.** The supplied configuration uses `concatenate_all_content`, which re-scans the entire conversation on every turn. This catches multi-turn prompt injection that `last_message` would miss, at the cost of scanning more text per call — cost, added latency, and the risk of hitting the [2 MB maximum payload size per synchronous scan request](https://pan.dev/prisma-airs/api/airuntimesecurity/airuntimesecurityapi/) on long conversations. If your conversations grow large, weigh switching to `last_message` against the coverage you would lose.
 
-**Observability.** The client-facing message and the internal record are deliberately different: the client sees only "Blocked by Prisma AIRS" and, when present, the `scan_id`, while the category and the detection names stay internal. Rely on the **Prisma AIRS scan logs in Strata Cloud Manager**, correlated by `scan_id` — that channel is verified end to end. The configuration also routes the detail to `config.metrics.block_reason` and `config.metrics.block_detail`; those fields apply cleanly, but nothing guardrail-related was observed on the data plane's own metrics endpoint, including with the Prometheus policy and `ai_metrics` enabled, whose AI families cover LLM requests, cost and tokens rather than guardrail counters. Confirm in Konnect analytics before depending on them. Kong data plane logs remain the third place a block is visible.
+**Observability.** The client-facing message and the internal record are deliberately different: the client sees only "Blocked by Prisma AIRS" and, when present, the `scan_id`, while the category and the detection names stay internal. Rely on the **Prisma AIRS scan logs in Strata Cloud Manager**, correlated by `scan_id`; that channel is verified end to end. The configuration also routes the detail to `config.metrics.block_reason` and `config.metrics.block_detail`. `block_detail` must evaluate to a table, not a string: a string value there makes the data plane log a warning on every request, allowed or blocked, and the metric is dropped rather than exported. The supplied `airs_verdict` function returns `detail` as a table (`reason`, `category`, `detections`) for this reason. `block_reason` accepts a plain string without a warning. Whether the metric then reaches Konnect analytics is still unconfirmed; nothing guardrail-related was observed on the data plane's own metrics endpoint, including with the Prometheus policy and `ai_metrics` enabled, whose AI families cover LLM requests, cost and tokens rather than guardrail counters. Confirm in Konnect analytics before depending on it. Kong data plane logs remain the third place a block is visible.
+
+**Composition with other policies.** Kong's AI Gateway catalogue also offers `ai-sanitizer`, for PII redaction, and `ai-prompt-guard`. Placing `ai-sanitizer` ahead of the guardrail in the chain would send Prisma AIRS redacted text instead of the original: less PII leaves your environment, but Prisma AIRS's own data-loss-prevention detections then have nothing left to inspect. This is a deployment choice to weigh, not a recommendation made here. See the [AI Gateway Policies catalogue](https://developer.konghq.com/ai-gateway/policies/) for the policy names; this guide does not state an execution order between them, since plugin priority for `ai-custom-guardrail` is not published.
 
 **Scan correlation.** The supplied configuration sends no correlation identifier to Prisma AIRS. The scan API accepts three optional ones — `tr_id`, `session_id` and `transaction_id` — and when none is supplied, Prisma AIRS [generates one per atomic API call](https://docs.paloaltonetworks.com/ai-runtime-security/administration/api-intercept-create-configure-security-profile/use-the-ai-sessions-and-application-views). Two consequences in Strata Cloud Manager: under `airs-scan`, the prompt scan and the response scan of the same exchange appear as two unrelated entries, and the AI Sessions view groups nothing, since sessions are built from calls sharing a transaction ID. Each scan remains individually complete and correctly attributed to the profile and the application, so blocking and profile tuning are unaffected; what is unavailable is per-conversation and per-exchange grouping. Supplying an identifier is not a configuration change — a guardrail function has no access to any per-request value, so any identifier it produced would be either constant across all traffic or different in each of the two phases. Correlation requires the guardrail service to hold that state, which is the reference sidecar on the roadmap. Until then, correlate on `scan_id` from the Kong-side record.
 
@@ -342,7 +358,9 @@ Either change alone still blocks: `stop_on_error: false` only stops the plugin's
 | `401` from the LLM provider (deck variant) | `OPENAI_KEY` holds the bare key instead of the full header value | `ai-proxy-advanced`'s `auth.header_value` expects the complete value, for example `Bearer <key>`. Store the scheme in the secret, not just the key |
 | `404` or profile error from Prisma AIRS | `params.profile` does not match the profile name in Strata Cloud Manager | Correct the value and re-apply |
 | Policies applied but nothing is scanned | Policies not attached to the model, or no AI Proxy in the chain | Check the `policies` array on the AI Model, or set `global: true`. Confirm AI Proxy or AI Proxy Advanced is configured |
-| A streamed response is never scanned, and nothing signals it | `stream: true` skips the `OUTPUT` phase entirely, whichever policy is attached | Refuse `stream: true` where response coverage is required, or attach `airs-prompt-scan` and record the model as prompt-only |
+| A streamed response gets only partial scanning, or none at all | Streamed content still below `config.response_buffer_size` when the stream ends is never scanned; a large buffer value hides this over an entire short answer | Deny streaming on `airs-scan` models (`config.response_streaming: deny`), or attach `airs-prompt-scan` to models that must stream. See Operational considerations |
+| Data plane logs `metric ... block_detail has unexpected type string, expected table` | `config.metrics.block_detail` resolved to a string instead of a table | Return `detail` as a table from `airs_verdict` (`reason`, `category`, `detections`), as supplied |
+| `stream: true` gets `HTTP 400` `{"error":{"message":"response streaming is not enabled for this LLM"}}` | Expected: the model has `config.response_streaming: deny` and the client asked to stream | Attach `airs-prompt-scan` to that model instead of `airs-scan`, or set `response_streaming: allow` if response coverage is not required |
 | Prompt and response scans of one exchange look unrelated in Strata Cloud Manager, and AI Sessions groups nothing | No correlation identifier is sent, so Prisma AIRS creates one per call | Expected with a configuration-only deployment. See "Scan correlation" above; correlate on `scan_id` in the meantime |
 | Legitimate traffic blocked | Security profile too aggressive | Tune the profile in Strata Cloud Manager. No Kong change required |
 
@@ -359,7 +377,9 @@ Either change alone still blocks: `stop_on_error: false` only stops the plugin's
 - Kong, kongctl README (`--pat`, `KONGCTL_DEFAULT_KONNECT_PAT`): https://github.com/Kong/kongctl
 - Kong, deck gateway sync: https://developer.konghq.com/deck/gateway/sync/
 - Kong, deck tags and `--select-tag`: https://developer.konghq.com/deck/gateway/tags/
-- Kong, AI Proxy Advanced configuration reference (`auth.header_value`): https://developer.konghq.com/plugins/ai-proxy-advanced/reference/
+- Kong, AI Proxy Advanced configuration reference (`auth.header_value`, `response_streaming`): https://developer.konghq.com/plugins/ai-proxy-advanced/reference/
+- Kong, AI Gateway streaming (`config.response_streaming` on the AI Model): https://developer.konghq.com/ai-gateway/streaming/
+- Kong, AI Gateway changelog (`rejection_mode`, `continue_on_detection`, `log_blocked_content`): https://developer.konghq.com/ai-gateway/changelog/
 - Kong, Vault entity and backends: https://developer.konghq.com/gateway/entities/vault/
 - Palo Alto Networks, Prisma AIRS AI Runtime API Intercept: https://pan.dev/prisma-airs/api/airuntimesecurity/airuntimesecurityapi/
 - Palo Alto Networks, Kong integration assets: https://github.com/PaloAltoNetworks/prisma-airs-integrations

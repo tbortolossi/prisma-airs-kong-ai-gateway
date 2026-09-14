@@ -42,7 +42,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   silently bypasses response scanning. The finding was already documented in
   *Scope and limits* and in *Design decisions*, but only for a reader who got
   that far — it belongs where deployment scope is decided, not where it is
-  verified.
+  verified. Corrected 2026-09-14 — see *Fixed*, below.
 - `docs/deployment-guide.md`: a "Scan correlation" operational consideration and
   a matching troubleshooting row, stating that no correlation identifier is sent
   and what that means when reading the Prisma AIRS scan logs — the two scans of
@@ -76,7 +76,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Comments in both configuration files still called the raising-function case
   `SYNTHESIZED` and described streaming as a buffering nuance. Both now carry
   the lab findings: HTTP 500 independent of `stop_on_error`, and an OUTPUT
-  phase that is never invoked under `stream: true`.
+  phase that is never invoked under `stream: true` (this second point was
+  itself corrected 2026-09-14 — see below).
 - `docs/sources.md` now cites the Request Callout plugin page for the
   "Kong Gateway 3.10+" note in the deployment guide.
 
@@ -102,6 +103,84 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   correlation) and `block_detail` (category and detections), and `CLAUDE.md`
   describes that wiring rather than a looser one. The deck file notes that the
   `ai-proxy-advanced` header value must carry its own `Bearer ` prefix.
+
+### Fixed
+
+- **The streaming statement was wrong, and the error was this repository's
+  own.** README, both configuration files, and the guide all said Kong never
+  invokes the `OUTPUT` phase on a `stream: true` response. Measured again
+  2026-09-14: the phase does run on a stream, in segments of about
+  `response_buffer_size` bytes — a 309-character stream produced three
+  `OUTPUT` calls (101 / 104 / 103 characters) at the schema default of 100.
+  What the 2026-09-08 run actually measured was the effect of
+  `response_buffer_size: 65536`, set in both `config/kongctl/airs-guardrail.yaml`
+  and `config/deck/airs-guardrail.yaml`: no stream in that run ever
+  accumulated 65536 bytes before ending, so the threshold was never crossed.
+  Both configuration files drop the field, letting the schema default apply.
+  README corrected throughout: the `IMPORTANT` callout, *Scope and limits*,
+  *Design decisions*, and *Verification status*.
+- `metrics.block_detail: "$(airs_verdict.detail)"` evaluated to a string. The
+  data plane logged a warning on every single request, allowed or blocked, in
+  both phases — `metric input_block_detail has unexpected type string,
+  expected table` — which is the likely reason nothing guardrail-related was
+  ever seen on the metrics endpoint. `airs_verdict` now returns `detail` as a
+  table, `{ reason, category, detections }`, in both configuration files; the
+  warning is gone, measured over the same request set. `block_message` is
+  unchanged.
+- The header comments in both `config/kongctl/airs-guardrail.yaml` and
+  `config/deck/airs-guardrail.yaml` still described the old streaming and
+  `block_detail` behaviour. Corrected to match the two fixes above.
+
+### Changed
+
+- `response_buffer_size` is no longer set in either policy; the schema default
+  (100) applies. It only affects a streamed response — a non-streamed one is
+  always scanned in one call regardless of the value.
+- `airs_verdict`'s `detail` return value is now a table,
+  `{ reason, category, detections }`, instead of a string. This changes what
+  `metrics.block_detail` carries; it does not change `block_message`, the
+  fixed generic text returned to the client.
+- The kongctl attachment example adds `config.response_streaming: deny`
+  alongside `!ref airs-scan`. The deck variant sets `response_streaming: deny`
+  on the service-level `ai-proxy-advanced` and gives the streaming route a
+  route-level `ai-proxy-advanced` with `response_streaming: allow`, next to
+  `airs-prompt-scan` — the same route-over-service precedence the file already
+  relied on for the guardrail policies themselves.
+- `scripts/test-airs.sh` gains a streaming probe that reports what it observes
+  but asserts nothing, so a still-open question (whether a blocked stream ever
+  carries a `finish_reason: 'blocked_by_guard'` terminal chunk) does not fail
+  the suite.
+- README: *Why this exists* now names the v2 catalogue's partner guardrails —
+  `ai-aws-guardrails`, `ai-azure-content-safety`, `ai-gcp-model-armor`,
+  `ai-lakera-guard`, and NVIDIA NeMo Guardrails since AI Gateway 2.0.1 — and
+  states that the custom Lua plugin path is closed by the Konnect control
+  plane rejecting a `prisma-airs-intercept` policy type, not by the data plane
+  runtime, which is Kong Gateway 3.14.0.3 underneath the AI Gateway 2.0.3
+  label. *Related* now points at the `custom-plugin-v3` flavours of Palo Alto
+  Networks' integration assets, which now cite this repository as the AI
+  Gateway 2.x reference.
+
+### Added
+
+- Both configuration files gain commented-out lines for `rejection_mode`,
+  `continue_on_detection` and `log_blocked_content` — present on a 2.0.3 data
+  plane, absent from the published schema page, so shipping them uncommented
+  would fail `scripts/check-plugin-schema.py --schema` until Kong publishes
+  the field. Measured: `rejection_mode: verbose` returns HTTP 403 with a
+  structured `GUARDRAIL_BLOCKED` body; `stealth` returns HTTP 403 and drops
+  the `scan_id`; `continue_on_detection: true` turns a block into HTTP 200
+  while still calling the guardrail, a monitoring mode for a pilot.
+- `docs/lab-streaming.md`, a lab procedure for whether a streamed response is
+  scanned, and how.
+- New offline assertions covering the table-shaped `detail` return value.
+
+### Known gap
+
+- On a streamed response, the segment that trips a detection has already
+  reached the client before the block takes effect; only what follows it is
+  prevented. Content still below `response_buffer_size` when the stream ends
+  is never scanned. The `finish_reason: 'blocked_by_guard'` terminal chunk the
+  schema text describes has still not been observed.
 
 ## [0.3.0] — 2026-09-08
 

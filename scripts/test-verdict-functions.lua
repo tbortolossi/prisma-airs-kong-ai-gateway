@@ -7,8 +7,14 @@
 -- (airs-prompt-scan) and airs_contents (airs-scan), so these assertions can
 -- never drift from the shipped configuration.
 --
--- 63 assertions: 28 verdict cases run against both verdict copies, plus 7 on
+-- 71 assertions: 32 verdict cases run against both verdict copies, plus 7 on
 -- airs_contents. TAP-style output, non-zero exit on any failure.
+--
+-- `detail` is a TABLE { reason, category, detections } on every path, never a
+-- string: it is wired to metrics.block_detail, and the data plane drops a
+-- string there with "metric input_block_detail has unexpected type string,
+-- expected table" (LAB-VERIFIED 2026-09-14). check() enforces the shape on
+-- every verdict case; the named cases pin the values per path.
 --
 -- Run with: ./scripts/run-lua-tests.sh
 -- =============================================================================
@@ -60,8 +66,41 @@ local function contains(haystack, needle)
   return string.find(haystack, needle, 1, true) ~= nil
 end
 
+-- detail must be exactly { reason = string, category = string,
+-- detections = { string... } }: a sequence with no holes, no other keys.
+-- Returns a problem string, or nil.
+local function detail_shape_problem(detail)
+  if type(detail) ~= "table" then
+    return "detail is not a table: " .. tostring(detail)
+  end
+  for key in pairs(detail) do
+    if key ~= "reason" and key ~= "category" and key ~= "detections" then
+      return "unexpected key in detail: " .. tostring(key)
+    end
+  end
+  if type(detail.reason) ~= "string" then
+    return "detail.reason is not a string: " .. tostring(detail.reason)
+  elseif type(detail.category) ~= "string" then
+    return "detail.category is not a string: " .. tostring(detail.category)
+  elseif type(detail.detections) ~= "table" then
+    return "detail.detections is not a table: " .. tostring(detail.detections)
+  end
+  local n = 0
+  for key, value in pairs(detail.detections) do
+    n = n + 1
+    if type(value) ~= "string" then
+      return "detection " .. tostring(key) .. " is not a string"
+    end
+  end
+  if n ~= #detail.detections then
+    return "detail.detections is not a sequence"
+  end
+  return nil
+end
+
 -- want: { block = bool, message_has = str, message_lacks = { str... },
---         detail = str, detail_has = str }
+--         detail = str (exact reason), detail_has = str,
+--         category = str, detections = { str... } (exact, in order) }
 local function check(name, got, want)
   local problem = nil
   if type(got) ~= "table" then
@@ -70,16 +109,23 @@ local function check(name, got, want)
     problem = "expected block=" .. tostring(want.block) .. ", got " .. tostring(got.block)
   elseif type(got.block_message) ~= "string" then
     problem = "block_message is not a string: " .. tostring(got.block_message)
-  elseif type(got.detail) ~= "string" then
-    problem = "detail is not a string: " .. tostring(got.detail)
+  elseif detail_shape_problem(got.detail) then
+    problem = detail_shape_problem(got.detail)
   elseif want.message_has and not contains(got.block_message, want.message_has) then
     problem = string.format("expected block_message containing %q, got %q",
       want.message_has, got.block_message)
-  elseif want.detail and got.detail ~= want.detail then
-    problem = string.format("expected detail %q, got %q", want.detail, got.detail)
-  elseif want.detail_has and not contains(got.detail, want.detail_has) then
-    problem = string.format("expected detail containing %q, got %q",
-      want.detail_has, got.detail)
+  elseif want.detail and got.detail.reason ~= want.detail then
+    problem = string.format("expected detail.reason %q, got %q", want.detail, got.detail.reason)
+  elseif want.detail_has and not contains(got.detail.reason, want.detail_has) then
+    problem = string.format("expected detail.reason containing %q, got %q",
+      want.detail_has, got.detail.reason)
+  elseif want.category and got.detail.category ~= want.category then
+    problem = string.format("expected detail.category %q, got %q",
+      want.category, got.detail.category)
+  elseif want.detections
+      and table.concat(got.detail.detections, ",") ~= table.concat(want.detections, ",") then
+    problem = string.format("expected detections {%s}, got {%s}",
+      table.concat(want.detections, ","), table.concat(got.detail.detections, ","))
   else
     for _, leak in ipairs(want.message_lacks or {}) do
       if contains(got.block_message, leak) then
@@ -120,36 +166,45 @@ local function verdict_cases(label, verdict)
   -- Fail-closed paths. Each of these is a way the scan can fail to produce a
   -- usable verdict. Every one of them must block, or the guardrail is
   -- bypassable by making Prisma AIRS unavailable.
-  case("nil verdict blocks", nil,
-    { block = true, detail_has = "fail-closed" })
+  case("nil verdict blocks, detail is a table with category unavailable", nil,
+    { block = true, detail = "verdict unavailable (fail-closed)",
+      category = "unavailable", detections = {} })
   case("empty table blocks", {},
-    { block = true, detail_has = "fail-closed" })
-  case("missing action blocks", { category = "benign" },
-    { block = true, detail_has = "fail-closed" })
+    { block = true, detail_has = "fail-closed", category = "unavailable", detections = {} })
+  case("missing action blocks, and the AIRS category is not trusted",
+    { category = "benign" },
+    { block = true, detail_has = "fail-closed", category = "unavailable", detections = {} })
   case("non-string action blocks", { action = 1 },
-    { block = true, detail_has = "fail-closed" })
+    { block = true, detail_has = "fail-closed", category = "unavailable", detections = {} })
   case("category=error blocks despite action=allow",
     { action = "allow", category = "error" },
-    { block = true, detail = "scan error (fail-closed)" })
+    { block = true, detail = "scan error (fail-closed)", category = "error", detections = {} })
   case("category=timeout blocks despite action=allow",
     { action = "allow", category = "timeout" },
-    { block = true, detail = "scan timeout (fail-closed)" })
+    { block = true, detail = "scan timeout (fail-closed)", category = "timeout", detections = {} })
+  case("category=error does not enumerate detections",
+    { action = "allow", category = "error", prompt_detected = { injection = true } },
+    { block = true, detail = "scan error (fail-closed)", category = "error", detections = {} })
   case("fail-closed message is generic",
     { action = "allow", category = "timeout", scan_id = "t-1" },
     { block = true, message_has = "Blocked by Prisma AIRS [scan_id=t-1]",
       message_lacks = { "timeout" } })
 
   -- Allow path. A benign verdict must not block, or the gateway is unusable.
-  case("benign allow passes", { action = "allow", category = "benign" },
-    { block = false, detail = "" })
+  case("benign allow passes, detail is an empty table", { action = "allow", category = "benign" },
+    { block = false, detail = "", category = "", detections = {} })
   case("allow with no detection fired passes (alert-only profile)",
     { action = "allow", category = "benign", prompt_detected = { injection = false } },
-    { block = false, detail = "" })
+    { block = false, detail = "", category = "", detections = {} })
+  case("allow with a fired detection still passes with empty detail (alert-only profile)",
+    { action = "allow", category = "benign", prompt_detected = { injection = true } },
+    { block = false, detail = "", category = "", detections = {} })
 
   -- Block path, against the documented Prisma AIRS scan response shape.
   case("block returns the generic client message",
     { action = "block", category = "malicious" },
-    { block = true, message_has = "Blocked by Prisma AIRS", detail = "malicious" })
+    { block = true, message_has = "Blocked by Prisma AIRS", detail = "malicious",
+      category = "malicious", detections = {} })
   case("block carries scan_id for SCM correlation",
     { action = "block", category = "malicious", scan_id = "abc-123" },
     { block = true, message_has = "[scan_id=abc-123]" })
@@ -163,42 +218,53 @@ local function verdict_cases(label, verdict)
   case("detail carries the category and the sorted detections",
     { action = "block", category = "malicious",
       prompt_detected = { injection = true, dlp = true } },
-    { block = true, detail = "malicious: dlp, injection" })
+    { block = true, detail = "malicious: dlp, injection",
+      category = "malicious", detections = { "dlp", "injection" } })
   case("detail merges prompt and response detections, sorted",
     { action = "block", category = "malicious",
       prompt_detected = { url_cats = true },
       response_detected = { db_security = true, ungrounded = true } },
-    { block = true, detail = "malicious: db_security, ungrounded, url_cats" })
+    { block = true, detail = "malicious: db_security, ungrounded, url_cats",
+      category = "malicious", detections = { "db_security", "ungrounded", "url_cats" } })
   case("detections that did not fire are not listed",
     { action = "block", category = "malicious",
       prompt_detected = { dlp = false, injection = true } },
-    { block = true, detail = "malicious: injection" })
+    { block = true, detail = "malicious: injection",
+      category = "malicious", detections = { "injection" } })
   case("non-table prompt_detected is ignored",
     { action = "block", category = "malicious", prompt_detected = "oops" },
-    { block = true, detail = "malicious" })
+    { block = true, detail = "malicious", category = "malicious", detections = {} })
   case("missing category on block reads unknown",
     { action = "block" },
-    { block = true, detail = "unknown" })
-  case("action outside allow|block fails closed",
+    { block = true, detail = "unknown", category = "unknown", detections = {} })
+  case("action outside allow|block fails closed, keeping the AIRS category",
     { action = "maybe", category = "benign" },
-    { block = true, detail = "unexpected action maybe" })
+    { block = true, detail = "unexpected action maybe", category = "benign", detections = {} })
+  case("unexpected action with fired detections lists them",
+    { action = "maybe", category = "benign", prompt_detected = { injection = true } },
+    { block = true, detail = "unexpected action maybe: injection",
+      category = "benign", detections = { "injection" } })
+  case("unexpected action without category reads unknown",
+    { action = "maybe" },
+    { block = true, detail = "unexpected action maybe", category = "unknown", detections = {} })
 
   -- String verdicts. Kong documents $(resp) as a string in the OUTPUT phase;
   -- the cjson.safe stub above serves the fixtures.
   case("decoded JSON string allow passes",
     '{"action":"allow","category":"benign"}',
-    { block = false, detail = "" })
+    { block = false, detail = "", category = "", detections = {} })
   case("decoded JSON string block blocks with scan_id",
     '{"action":"block","category":"malicious","scan_id":"json-42","prompt_detected":{"injection":true}}',
     { block = true, message_has = "[scan_id=json-42]", detail = "malicious: injection",
+      category = "malicious", detections = { "injection" },
       message_lacks = { "malicious", "injection" } })
   case("decoded JSON string timeout fails closed",
     '{"action":"allow","category":"timeout"}',
-    { block = true, detail = "scan timeout (fail-closed)" })
+    { block = true, detail = "scan timeout (fail-closed)", category = "timeout", detections = {} })
   case("undecodable string body fails closed", "not json",
-    { block = true, detail_has = "fail-closed" })
+    { block = true, detail_has = "fail-closed", category = "unavailable", detections = {} })
   case("empty string body fails closed", "",
-    { block = true, detail_has = "fail-closed" })
+    { block = true, detail_has = "fail-closed", category = "unavailable", detections = {} })
 
   -- cjson.safe failure modes. The FIXTURES stub above only exercises "require
   -- succeeds, decode returns nil, err" (the "undecodable string body" case
@@ -209,7 +275,7 @@ local function verdict_cases(label, verdict)
     function() error("cjson.safe module not found") end,
     '{"action":"allow","category":"benign"}',
     { block = true, message_has = "Blocked by Prisma AIRS",
-      detail = "verdict unavailable (fail-closed)" })
+      detail = "verdict unavailable (fail-closed)", category = "unavailable", detections = {} })
 
   -- Mutation check: the error value raised is itself shaped like an allow
   -- verdict. The correct code discards `decoded` whenever `ok` is false
@@ -221,21 +287,21 @@ local function verdict_cases(label, verdict)
     function() error({ action = "allow", category = "benign" }) end,
     '{"action":"allow","category":"benign"}',
     { block = true, message_has = "Blocked by Prisma AIRS",
-      detail = "verdict unavailable (fail-closed)" })
+      detail = "verdict unavailable (fail-closed)", category = "unavailable", detections = {} })
 
   case_with_cjson_loader(
     "cjson.safe loads but has no decode function fails closed",
     function() return {} end,
     '{"action":"allow","category":"benign"}',
     { block = true, message_has = "Blocked by Prisma AIRS",
-      detail = "verdict unavailable (fail-closed)" })
+      detail = "verdict unavailable (fail-closed)", category = "unavailable", detections = {} })
 
   case_with_cjson_loader(
     "cjson.safe decode returns a non-table value fails closed",
     function() return { decode = function() return 42 end } end,
     '{"action":"allow","category":"benign"}',
     { block = true, message_has = "Blocked by Prisma AIRS",
-      detail = "verdict unavailable (fail-closed)" })
+      detail = "verdict unavailable (fail-closed)", category = "unavailable", detections = {} })
 end
 
 verdict_cases("scan_verdict", scan_verdict)

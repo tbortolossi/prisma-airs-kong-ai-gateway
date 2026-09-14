@@ -8,7 +8,8 @@
 #   ./scripts/test-airs.sh
 #
 # Cases 1 and 5 must be allowed. Cases 2 to 4 must be rejected with a Prisma
-# AIRS block reason.
+# AIRS block reason. A sixth probe replays case 1 with "stream": true and only
+# reports the gateway's streaming posture; it never affects the exit code.
 #
 # Message contract: a block response carries the generic message "Blocked by
 # Prisma AIRS", optionally followed by " [scan_id=...]". It carries no
@@ -105,9 +106,10 @@ JSON
   echo
 }
 
+benign_prompt='"Explain in two sentences the difference between TLS 1.2 and TLS 1.3."'
+
 # 1. Legitimate traffic: must pass
-call allow "Benign prompt" \
-  '"Explain in two sentences the difference between TLS 1.2 and TLS 1.3."'
+call allow "Benign prompt" "$benign_prompt"
 
 # 2. Prompt injection: expect an injection detection
 call block "Prompt injection" \
@@ -125,6 +127,43 @@ call block "Malicious URL" \
 #    This case is what reveals an over-aggressive security profile.
 call allow "Legitimate security question" \
   '"What are the best practices to protect a RAG application against prompt injection?"'
+
+# 6. Streaming posture. Not asserted: both outcomes below are valid
+#    deployments, and which one applies is a choice made on the model
+#    (response_streaming) rather than in the guardrail policy.
+#      HTTP 400 "response streaming is not enabled"  streaming refused at the
+#        model: airs-scan sees every response whole, nothing is delivered
+#        before its verdict.
+#      HTTP 200 SSE stream  streaming allowed: the response is scanned per
+#        segment and a flagged segment reaches the client before its verdict;
+#        the README explains the trade-off.
+echo "───────────────────────────────────────────────────────────────"
+echo "▶ Streaming posture (probe, not asserted)"
+stream_code="$(curl -s -o "$BODY_FILE" -w '%{http_code}' --max-time 120 \
+  -K "$AUTH_CFG" \
+  -X POST "${PROXY}/v1/chat/completions" \
+  -H "Content-Type: application/json" \
+  --data @- <<JSON
+{
+  "model": "${esc_model}",
+  "stream": true,
+  "messages": [{"role": "user", "content": ${benign_prompt}}]
+}
+JSON
+)"
+stream_body="$(cat "$BODY_FILE")"
+if [ "$stream_code" = "400" ] && printf '%s' "$stream_body" | grep -q "response streaming is not enabled"; then
+  echo "  INFO  HTTP ${stream_code}  streaming refused at the model (response_streaming: deny):"
+  echo "        the response is always scanned whole, nothing is delivered before the verdict"
+elif [ "$stream_code" = "200" ] && printf '%s' "$stream_body" | grep -q '^data:'; then
+  echo "  INFO  HTTP ${stream_code}  SSE stream delivered (streaming allowed):"
+  echo "        response scanning is per segment, and a flagged segment reaches the"
+  echo "        client before its verdict (see the README)"
+else
+  echo "  INFO  HTTP ${stream_code}  neither a streaming refusal nor an SSE stream; read the body"
+fi
+echo "  → $(printf '%s' "$stream_body" | head -c 400)"
+echo
 
 echo "───────────────────────────────────────────────────────────────"
 if [ "$unexpected" -eq 0 ]; then
