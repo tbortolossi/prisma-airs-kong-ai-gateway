@@ -1,0 +1,37 @@
+# =============================================================================
+# Optional: a generic client body when Prisma AIRS cannot be consulted
+#
+# Shape : classic Gateway control plane, self-managed data planes
+# Tool  : merge this plugin into the state file that carries
+#         config/deck/airs-guardrail.yaml, then deck gateway diff / sync
+# Needs : the post-function plugin (Kong Gateway Enterprise)
+#
+# Same function as config/kongctl/airs-error-sanitizer.yaml, as a plugin on
+# the Service that carries airs-scan. Read that file's header for what it
+# does, what it matched on, and its limits.
+#
+# VERIFICATION STATUS
+#   DOCUMENTED   : post-function config.header_filter / config.body_filter
+#                  https://developer.konghq.com/plugins/post-function/
+#   SYNTHESIZED  : this transposition. The kongctl variant is LAB-VERIFIED
+#                  2026-09-14; the same plugin on a classic control plane has
+#                  not been exercised.
+# =============================================================================
+
+_format_version: "3.0"
+
+plugins:
+  - name: post-function
+    service: llm-openai
+    config:
+      header_filter:
+        - |
+          if kong.response.get_status() == 500 then kong.response.clear_header("Content-Length") end
+      body_filter:
+        - |
+          if kong.response.get_status() == 500 then
+            local b = kong.response.get_raw_body()
+            if b and b:find("custom guardrail service", 1, true) then
+              kong.response.set_raw_body('{"error":{"message":"Guardrail unavailable"}}')
+            end
+          end

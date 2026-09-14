@@ -276,6 +276,8 @@ docs/lab-tool-calls.md               lab procedure: is function calling scanned?
 docs/lab-streaming.md                lab procedure: is a streamed response scanned, and how?
 config/kongctl/airs-guardrail.yaml   AI Gateway 2.x
 config/deck/airs-guardrail.yaml      classic Gateway control plane
+config/kongctl/airs-error-sanitizer.yaml   optional: generic body when Prisma AIRS cannot be consulted
+config/deck/airs-error-sanitizer.yaml      same, classic control plane, not exercised
 scripts/test-airs.sh                 five-case validation suite, needs a live gateway
 scripts/run-lua-tests.sh             offline unit tests for the verdict functions
 scripts/test-verdict-functions.lua   the assertions those tests run
@@ -348,7 +350,13 @@ blocked by policy; HTTP 500 means the guardrail could not be consulted and
 `stop_on_error: true` refused the request. This is an information-disclosure
 limit worth noting: the 500 body names the guardrail step and its failure, and
 on a bad-status failure it includes the guardrail service's own error body, not
-just a generic message.
+just a generic message. An optional `post-function` policy,
+[`config/kongctl/airs-error-sanitizer.yaml`](config/kongctl/airs-error-sanitizer.yaml),
+attached next to `airs-scan`, replaces that body with
+`{"error":{"message":"Guardrail unavailable"}}` while leaving blocks, allowed
+responses and streams untouched (measured 2026-09-14); the original text stays
+in the data plane error log. It matches Kong's own wording, so a Kong release
+that rewords the error turns it into a no-op, never into a block.
 
 **Generic block message.** The client only ever sees "Blocked by Prisma AIRS",
 optionally followed by " [scan_id=...]" — never the category or the detection
@@ -620,20 +628,40 @@ behaviour, the guardrail-failure client contract, the `metrics.*` export path,
 - **`proxy_config` works.** `http_proxy_host` / `http_proxy_port` on
   `airs-scan`, against an `http://` guardrail URL, routed both the INPUT and
   the OUTPUT call through the forward proxy. The `https_proxy_host` /
-  `https_proxy_port` pair, the one a real Prisma AIRS endpoint needs, was not
-  exercised.
+  `https_proxy_port` pair was verified in the fifth round, below.
 - **The streaming tail gap, with a number on it.** A 419-character stream was
   scanned in four segments totalling 408 characters; the last 11 characters,
   containing the word the guardrail was set to block, were never sent to
   Prisma AIRS, and the stream completed HTTP 200. See
   [Streaming responses are scanned in segments](#streaming-responses-are-scanned-in-segments).
 
+A fifth round, the same day, closed two of the remaining items:
+
+- **`proxy_config` works for the https pair too.** The shipped `airs-scan`,
+  against the real Prisma AIRS endpoint through a forward proxy speaking
+  HTTP CONNECT: `scripts/test-airs.sh` 5/5, eleven `CONNECT` tunnels logged
+  from the data plane. Proxy credentials and `no_proxy` were not exercised.
+- **The verbose HTTP 500 body can be made generic with a `post-function`
+  policy**, shipped as an optional file; see
+  [Design decisions](#design-decisions). `exit-transformer`, tried first, does
+  not intercept that response, with or without its `handle_unknown` /
+  `handle_unexpected` switches
+  ([exit-transformer](https://developer.konghq.com/plugins/exit-transformer/)
+  hooks `kong.response.exit()` only).
+- **The OpenAI-driver hypothesis for the `blocked_by_guard` chunk could not be
+  tested.** A second model provider of type `openai` pointed at the local
+  model's OpenAI-compatible endpoint was accepted by the control plane, but
+  every request to its route answered a plain-text 404 from the data plane.
+
 What remains unconfirmed:
 
-- whether the templated `metrics.*` values reach Konnect's own AI analytics UI
-  dashboards, as distinct from the log-serializer export verified above;
+- whether the templated `metrics.*` values appear in the Konnect UI views fed
+  by the AI Gateway request-log channel, as distinct from the log-serializer
+  export verified above and from the Requests analytics API, which carries
+  none;
 - the `finish_reason: 'blocked_by_guard'` terminal chunk the schema text
-  describes for a blocked stream: still not observed, in two rounds of block cases.
+  describes for a blocked stream: still not observed, in two rounds of block
+  cases on the Ollama driver, and untested on an OpenAI-driver model.
 
 Validate in a non-production environment before this reaches production traffic.
 

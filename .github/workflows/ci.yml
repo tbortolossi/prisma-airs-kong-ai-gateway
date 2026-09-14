@@ -36,6 +36,20 @@ jobs:
           fi
           grep -hE '^\s*guarding_mode:' -r config/ | sort -u
 
+      - name: Guard the fail-closed defaults
+        run: |
+          # stop_on_error: false alone passes traffic unscanned when the call
+          # to Prisma AIRS fails (measured 2026-09-14); continue_on_detection
+          # is a pilot switch. Both ship commented out or true.
+          if grep -nE '^\s*stop_on_error:\s*false\b' -r config/; then
+            echo "::error::stop_on_error must stay true in the shipped configuration"
+            exit 1
+          fi
+          if grep -nE '^\s*continue_on_detection:\s*true\b' -r config/; then
+            echo "::error::continue_on_detection must stay commented out in the shipped configuration"
+            exit 1
+          fi
+
       - name: Validate config against the live plugin schema
         # Runs on push, pull_request and the weekly cron alike, since all three
         # trigger this job. This is what the cron comment above promises: catch

@@ -6,6 +6,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `config/kongctl/airs-error-sanitizer.yaml`, an optional `post-function`
+  policy that replaces the verbose `HTTP 500` body returned when Prisma AIRS
+  cannot be consulted with `{"error":{"message":"Guardrail unavailable"}}`,
+  leaving blocks, allowed responses and streams untouched (measured
+  2026-09-14). `config/deck/airs-error-sanitizer.yaml` is the classic
+  control plane transposition, not exercised. `exit-transformer` was tried
+  first and does not intercept that response.
+- CI refuses an uncommented `stop_on_error: false` or
+  `continue_on_detection: true` under `config/`, next to the existing
+  `guarding_mode` guard, and `scripts/check-plugin-schema.py --parity` now
+  parses every YAML under `config/`, so the optional files are checked too.
+
+### Changed
+
+- `proxy_config` is verified for both pairs: the https pair carried the
+  supplied configuration to the real Prisma AIRS endpoint through an HTTP
+  CONNECT proxy with the validation suite passing. README, guide,
+  `docs/sources.md` and both configuration file comments updated.
+- README and `docs/deployment-guide.md` no longer describe the verbose
+  `HTTP 500` body as not configurable; they point at the optional sanitizer.
+- README, "What remains unconfirmed": the `finish_reason: 'blocked_by_guard'`
+  item now records that an OpenAI-driver model could not be brought up in the
+  lab (plain-text 404 from the data plane), so the driver hypothesis is
+  untested; the Konnect item is narrowed to the UI views fed by the AI
+  Gateway request-log channel.
+
 ### Changed
 
 - README: the "community assets, not an official Palo Alto Networks or Kong

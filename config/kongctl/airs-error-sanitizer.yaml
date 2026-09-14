@@ -1,0 +1,59 @@
+# =============================================================================
+# Optional: a generic client body when Prisma AIRS cannot be consulted
+#
+# Shape : AI Gateway 2.x control plane in Konnect, self-managed data planes
+# Tool  : kongctl apply -f config/kongctl/airs-error-sanitizer.yaml
+# Needs : the post-function plugin (Kong Gateway Enterprise, present on the
+#         AI Gateway data plane image)
+#
+# When the call to Prisma AIRS fails (unreachable, timeout, non-2xx, body that
+# is not JSON) and stop_on_error is true, ai-custom-guardrail answers HTTP 500
+# with its internal error text, and relays the guardrail service's own error
+# body when there is one. rejection_mode does not apply to that path: it only
+# shapes a block. This policy replaces that body with a fixed generic one.
+#
+# VERIFICATION STATUS
+#   DOCUMENTED   : post-function config.header_filter and config.body_filter,
+#                  arrays of Lua chunks run in the named phase
+#                  https://developer.konghq.com/plugins/post-function/
+#   DOCUMENTED   : the AI Gateway 2.x declarative `type` accepts a non-AI
+#                  plugin name (kongctl declarative docs)
+#   LAB-VERIFIED : 2026-09-14, Kong AI Gateway 2.0.3 / Kong Gateway 3.14.0.3.
+#                  Attached next to airs-scan: an unreachable guardrail gives
+#                  HTTP 500 {"error":{"message":"Guardrail unavailable"}}; a
+#                  block still gives HTTP 400 with the generic Prisma AIRS
+#                  message; allowed responses, streamed or not, are untouched.
+#                  exit-transformer was tried first and does not intercept
+#                  this 500, with or without handle_unknown/handle_unexpected.
+#
+# Limits. The match is on Kong's own wording, "custom guardrail service". A
+# Kong release that rewords it turns this policy into a no-op: the body goes
+# back to the verbose form, traffic is never blocked by this policy. The data
+# plane error log keeps the original text either way.
+#
+# Attach it to the same AI Model as airs-scan or airs-prompt-scan:
+#
+#     policies:
+#       - !ref airs-scan
+#       - !ref airs-error-sanitizer
+# =============================================================================
+
+ai_gateway_policies:
+  - ref: airs-error-sanitizer
+    ai_gateway: !lookup { id: !env AI_GATEWAY_ID }
+    name: airs-error-sanitizer
+    display_name: "Prisma AIRS - generic guardrail failure response"
+    type: post-function
+    enabled: true
+    config:
+      header_filter:
+        - |
+          if kong.response.get_status() == 500 then kong.response.clear_header("Content-Length") end
+      body_filter:
+        - |
+          if kong.response.get_status() == 500 then
+            local b = kong.response.get_raw_body()
+            if b and b:find("custom guardrail service", 1, true) then
+              kong.response.set_raw_body('{"error":{"message":"Guardrail unavailable"}}')
+            end
+          end
