@@ -288,10 +288,11 @@ docs/deployment-guide.md             step-by-step deployment procedure
 docs/sources.md                      canonical upstream references
 docs/lab-tool-calls.md               lab procedure: is function calling scanned?
 docs/lab-streaming.md                lab procedure: is a streamed response scanned, and how?
+docs/lab-classic-control-plane.md    lab procedure: the deck variant on a classic control plane
 config/kongctl/airs-guardrail.yaml   AI Gateway 2.x
 config/deck/airs-guardrail.yaml      classic Gateway control plane
 config/kongctl/airs-error-sanitizer.yaml   optional: generic body when Prisma AIRS cannot be consulted
-config/deck/airs-error-sanitizer.yaml      same, classic control plane, not exercised
+config/deck/airs-error-sanitizer.yaml      same, classic control plane
 scripts/test-airs.sh                 five-case validation suite, needs a live gateway
 scripts/run-lua-tests.sh             offline unit tests for the verdict functions
 scripts/test-verdict-functions.lua   the assertions those tests run
@@ -688,6 +689,37 @@ A sixth round, the same day, settled the terminal chunk:
   `type: guardrail_rejected`), with no category or detection name. In both
   cases the flagged segment has already reached the client. See
   [Streaming responses are scanned in segments](#streaming-responses-are-scanned-in-segments).
+
+A seventh round, the same day, took the classic control plane variant out of
+the untested column and probed three more limits:
+
+- **The deck variant works on a classic control plane.** A Konnect classic
+  control plane with one `kong/kong-gateway:3.14.0.14` data plane, the
+  shipped `config/deck/airs-guardrail.yaml` with only the model target pointed
+  at the local model: `scripts/test-airs.sh` 5/5 twice; `stream: true` on the
+  service route refused with the same HTTP 400 body as on AI Gateway 2.x; the
+  dedicated streaming route streams and its route-level `airs-prompt-scan`
+  blocks a malicious prompt; the `OUTPUT` phase blocks a flagged response
+  (HTTP 400, one `contents[].response` call); and
+  `config/deck/airs-error-sanitizer.yaml` turns the outage HTTP 500 into
+  `{"error":{"message":"Guardrail unavailable"}}`. Procedure in
+  [docs/lab-classic-control-plane.md](docs/lab-classic-control-plane.md).
+- **The Prisma AIRS payload limit fails closed.** Kong forwards the whole
+  scanned text (3.58 million characters measured, no truncation). A 2.05 MB
+  prompt was scanned and answered; a 3.5 MB prompt got HTTP 413 from Prisma
+  AIRS, "The request body is too large", which `stop_on_error: true` turned
+  into HTTP 500 to the client in 1.2 s, the 413 body relayed. Under
+  `concatenate_all_content` the whole conversation counts against that limit.
+- **Concurrency holds.** Twenty parallel requests, each with its own marker:
+  twenty prompt scans and twenty response scans, every payload carrying
+  exactly its own marker. Twenty parallel requests on the live tenant, every
+  third one malicious: every verdict landed on the right request.
+- **The suite's fifth case flaked on the response leg.** One run in eight was
+  blocked with category `source_code`: the model had answered the question
+  about prompt injection with a code snippet, and the lab profile detects
+  source code. The prompt now asks for prose; five consecutive runs pass. A
+  block on that case points at the profile, and the category is in the scan
+  log.
 
 What remains unconfirmed:
 

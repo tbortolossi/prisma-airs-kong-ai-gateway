@@ -37,10 +37,11 @@ docs/deployment-guide.md             customer-facing procedure
 docs/sources.md                      canonical upstream references
 docs/lab-tool-calls.md               lab procedure: is function calling scanned?
 docs/lab-streaming.md                lab procedure: is a streamed response scanned, and how?
+docs/lab-classic-control-plane.md    lab procedure: the deck variant on a classic control plane
 config/kongctl/airs-guardrail.yaml   AI Gateway 2.x
 config/deck/airs-guardrail.yaml      classic Gateway control plane
 config/kongctl/airs-error-sanitizer.yaml   optional: generic body on a guardrail-call failure
-config/deck/airs-error-sanitizer.yaml      same, classic control plane (SYNTHESIZED)
+config/deck/airs-error-sanitizer.yaml      same, classic control plane
 scripts/test-airs.sh                 end-to-end suite, needs a live gateway
 scripts/run-lua-tests.sh             offline verdict function tests
 scripts/test-verdict-functions.lua   the assertions those tests run
@@ -164,6 +165,10 @@ no competitive positioning. Working notes go in `CLAUDE.local.md`.
   plane logs `metric input_block_detail has unexpected type string, expected
   table` at every request and drops the metric (LAB-VERIFIED 2026-09-14).
   `metrics.block_reason` accepts a string.
+- Prisma AIRS refuses a scan payload above about 2 MB with HTTP 413, which
+  `stop_on_error: true` turns into HTTP 500 (LAB-VERIFIED 2026-09-14). Kong
+  does not truncate the scanned text. Under `concatenate_all_content` the
+  whole conversation counts.
 - Prisma AIRS endpoints are regional. The global endpoint is the default; keep
   the URL a single point of change.
 
