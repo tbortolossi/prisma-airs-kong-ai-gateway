@@ -81,13 +81,17 @@ The API key is always a vault reference (`{vault://env/airs-token}`) or a
 placeholder. No real token, no customer tenant identifier, no profile name from a
 real deployment. Placeholder profile name is `kong-airs-prod`.
 
-**4. Fail-closed is the default, through both mechanisms.**
-`stop_on_error: true` handles a failed call to Prisma AIRS. The `airs_verdict`
-Lua function handles a successful call that returns an unusable verdict —
-including `category: "error"` and `category: "timeout"`, which AIRS returns
-alongside `action: "allow"`. Changing one without the other does not change the
-behaviour. Fail-open is an explicitly documented opt-in for pilot phases, never
-the shipped default.
+**4. Fail-closed is the default, through two mechanisms that cover two
+different failures.** `stop_on_error: true` handles a call to Prisma AIRS that
+fails (unreachable, timeout, non-2xx, undecodable body): the client gets HTTP
+500 with the internal error text. LAB-VERIFIED 2026-09-14: `stop_on_error:
+false` alone passes the traffic unscanned on such a failure (HTTP 200, model
+called, `airs_verdict` never evaluated). The `airs_verdict` Lua function handles
+a successful call that returns an unusable verdict — `action` missing, or
+`category: "error"` / `"timeout"`, which AIRS returns alongside `action:
+"allow"`. Both as shipped give fail-closed on both failures; relaxing one
+relaxes only its own failure class. Fail-open is an explicitly documented
+opt-in for pilot phases, never the shipped default.
 
 **5. Customer-facing documents stay customer-facing.**
 `docs/deployment-guide.md` contains no internal commentary, no verification tags,

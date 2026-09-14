@@ -115,6 +115,10 @@ ai_gateway_policies:
       # restated because they are load-bearing: stop_on_error is what actually
       # blocks traffic when the AIRS call itself fails, and 10 s of added
       # latency on an unreachable endpoint is too long for an inline guardrail.
+      # LAB-VERIFIED 2026-09-14: stop_on_error false alone passes the traffic
+      # unscanned when the call fails (HTTP 200, verdict never evaluated); true
+      # answers HTTP 500 with the failure text. The timeout is honoured to the
+      # millisecond (5.0 s measured at 5000).
       timeout: 5000
       ssl_verify: true
       stop_on_error: true
@@ -133,9 +137,16 @@ ai_gateway_policies:
       #                          verdict passes with HTTP 200, the guardrail is
       #                          still called. Does not cover a failed call.
       #   log_blocked_content    keep false, prompts are PII.
+      #   proxy_config           forward proxy for the guardrail call: http_proxy_host /
+      #                          _port, https_proxy_host / _port, auth_username /
+      #                          auth_password (referenceable), no_proxy. LAB-VERIFIED
+      #                          2026-09-14 for the http pair (both phases relayed).
       # rejection_mode: verbose
       # continue_on_detection: true
       # log_blocked_content: false
+      # proxy_config:
+      #   https_proxy_host: proxy.example.internal
+      #   https_proxy_port: 3128
 
       # response_buffer_size is deliberately NOT set; the schema default (100)
       # applies. LAB-VERIFIED 2026-09-14: it only matters for streams. A
