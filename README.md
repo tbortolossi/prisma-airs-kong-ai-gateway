@@ -633,7 +633,7 @@ What remains unconfirmed:
 - whether the templated `metrics.*` values reach Konnect's own AI analytics UI
   dashboards, as distinct from the log-serializer export verified above;
 - the `finish_reason: 'blocked_by_guard'` terminal chunk the schema text
-  describes for a blocked stream: still not observed, across four rounds.
+  describes for a blocked stream: still not observed, in two rounds of block cases.
 
 Validate in a non-production environment before this reaches production traffic.
 

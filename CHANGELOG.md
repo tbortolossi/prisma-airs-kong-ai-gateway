@@ -192,9 +192,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   alone returns HTTP 200 with the model's answer, unscanned, while both
   phases log the failure as an error. The two mechanisms cover two different
   failures: a failed call to Prisma AIRS, and a successful call with an
-  unusable verdict, not one shared switch. `docs/deployment-guide.md` is
-  another lot's file; the change there is described here, not applied by this
-  commit.
+  unusable verdict, not one shared switch.
 - README (Verification status) no longer carries "whether `metrics.*`
   templates are exported to Konnect's own AI analytics view" as unconfirmed.
   They are exported through Kong's log serializer, as
@@ -213,10 +211,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Cloud Manager remains the record for detection detail.
 - The `proxy_config` comment in both `config/kongctl/airs-guardrail.yaml` and
   `config/deck/airs-guardrail.yaml` now says verified, for an `http://`
-  guardrail URL through a forward proxy, rather than untested. Another lot's
-  file; described here for the record.
+  guardrail URL through a forward proxy, rather than untested.
 - `scripts/test-airs.sh`'s closing note now states the expected HTTP 500 on a
-  guardrail outage. Another lot's file; described here for the record.
+  guardrail outage.
 
 ### Added
 
@@ -228,8 +225,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - README and `docs/lab-streaming.md`: the streaming tail-gap example, a
   419-character stream scanned in four segments totalling 408 characters, the
   last 11 characters (the word that would have blocked the response) never
-  sent to Prisma AIRS, the stream completing HTTP 200. `docs/lab-streaming.md`
-  is another lot's file; described here for the record.
+  sent to Prisma AIRS, the stream completing HTTP 200.
 
 ### Known gap
 
