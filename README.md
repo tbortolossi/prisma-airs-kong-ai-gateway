@@ -152,7 +152,7 @@ Prisma AIRS from outside the gateway — for example the
 where the agent invokes the scan itself. Kong's per-tool ACLs remain useful next
 to that, but they restrict which tool may be called, not what travels inside it.
 
-### Tool calls on the LLM path: message content only
+### Tool calls on the LLM path
 
 Settled on a live gateway on 2026-09-08 (Kong AI Gateway 2.0.3, data plane
 3.14.0.3-enterprise), with the procedure in
@@ -169,22 +169,36 @@ Settled on a live gateway on 2026-09-08 (Kong AI Gateway 2.0.3, data plane
 
 Two consequences, and they point in opposite directions.
 
-**Tool definitions and generated tool arguments are never scanned**, under any
-`text_source`. They are not message content, so they never enter `$(content)`.
-A poisoned tool description, and the arguments the model chooses to send to a
-tool, are invisible to this configuration. That is the same class of gap as the
-MCP one above, and it has the same cause: the guardrail sees the text of the
-conversation, not the structure around it.
+**Tool definitions and generated tool arguments never enter `$(content)`**,
+under any `text_source`. They are not message content. That was a hard gap until
+2026-09-14, when it turned out a guardrail function can read the request body
+itself: `params.tool_scan` recovers them and appends them to the scanned text —
+`calls` for the arguments a model generates, `catalogue` for the `tools[]`
+declaration as well. Measured with the guardrail in `INPUT` mode, on a
+conversation whose injection sat solely inside a tool call's arguments: allowed
+5/5 with the setting off, blocked 5/5 with it on. It ships off, because
+`catalogue` in particular will be flagged by a profile with the source-code
+detector — a JSON parameter schema reads as code.
+
+Sending them as `contents[].tool_event` instead, which is the richer shape and
+which a live tenant does flag, is not possible here: a tool event is judged only
+when it is the last element of `contents[]`, so it would displace the prompt
+from the same scan. One guardrail call is one scan is one judged element.
 
 **Tool results are scanned** under `concatenate_all_content` — a `role: "tool"`
 message is a message with content like any other. So data coming back from a
 tool, which is where an untrusted external system injects into the context, does
 reach Prisma AIRS.
 
-The concatenation itself is worth knowing: messages are joined with `\n\n` in
-**reverse chronological order**, most recent first, with a trailing separator.
-Under `concatenate_all_content` the system prompt is included, which is a
-false-positive surface if it contains instructions that read like an injection.
+The concatenation itself is worth knowing, and it caused a false positive of its
+own: `text_source` joins messages with `\n\n` in **reverse chronological order**
+and with no indication of who said what. An ordinary two-turn exchange was
+blocked as prompt injection on a live tenant because the assistant's own answer,
+arriving unattributed inside the prompt, reads as an assertion planted there.
+The shipped configuration therefore rebuilds the scanned text from the request
+body with each turn prefixed `user:` or `assistant:` — never `system:`, which is
+the shape of a system-prompt spoof and blocks the whole conversation on its own.
+See [Design decisions](#design-decisions).
 
 ### Streaming responses are scanned in segments
 
@@ -258,25 +272,94 @@ Below Kong Gateway 3.14, `ai-custom-guardrail` is unavailable. An alternative
 based on the `request-callout` plugin exists upstream, limited to prompt scanning
 and the OpenAI chat completion format.
 
-## Quick start
+## TL;DR — install and configure
+
+Five minutes, on an AI Gateway 2.x control plane. The classic Gateway control
+plane variant is the same configuration wrapped for `deck`; see the deployment
+guide.
+
+**1. Put the Prisma AIRS key on the data planes**, as the environment variable
+`AIRS_TOKEN`. The configuration never holds the key: it carries the reference
+`{vault://env/airs-token}`, which Kong resolves against that variable, inside
+your own infrastructure.
 
 ```bash
-# 1. Provision the Prisma AIRS key on the data planes
+# Azure Container Apps
 az containerapp secret set --name <dp-app> --resource-group <rg> \
   --secrets airs-token=<PRISMA_AIRS_API_KEY>
 az containerapp update --name <dp-app> --resource-group <rg> \
   --set-env-vars AIRS_TOKEN=secretref:airs-token
 
-# 2. Apply the policies
+# Kubernetes
+kubectl create secret generic prisma-airs -n <ns> \
+  --from-literal=airs-token=<PRISMA_AIRS_API_KEY>
+# then mount it as AIRS_TOKEN in the data plane deployment
+```
+
+**2. Set two values in [`config/kongctl/airs-guardrail.yaml`](config/kongctl/airs-guardrail.yaml)**,
+in `params`, on both policies. Nothing else has to change to get a working
+deployment:
+
+| `params` key | Set it to | Default |
+|---|---|---|
+| `profile` | your Prisma AIRS security profile name, exactly | `kong-airs-prod` (a placeholder — it will fail closed until you change it) |
+| `app_name` | a label identifying this gateway in your scan logs | `kong-ai-gateway` |
+
+If your tenant is not on the global endpoint, change `request.url` too — it is
+the single point of change for the region.
+
+**3. Apply, attach, validate.**
+
+```bash
 export KONNECT_PAT="<konnect pat>"
 export AI_GATEWAY_ID="<ai gateway id>"
-kongctl apply -f config/kongctl/airs-guardrail.yaml --pat "$KONNECT_PAT"
 
-# 3. Attach one policy to your AI Model, then validate
+kongctl apply -f config/kongctl/airs-guardrail.yaml --pat "$KONNECT_PAT"
+# then attach ONE policy to your AI Model — airs-scan for prompt and response,
+# airs-prompt-scan for a model that must stream — and never both:
+#   policies:
+#     - !ref airs-scan
+
 export KONG_PROXY_URL="https://<proxy>"
 export CLIENT_KEY="<client credential>"
-./scripts/test-airs.sh
+./scripts/test-airs.sh          # 5 cases: 1 allowed, 3 blocked, 1 streaming probe
 ```
+
+### Optional `params`, all off unless set
+
+| Key | What it turns on |
+|---|---|
+| `session_header` | the request header naming the **conversation**, forwarded to Prisma AIRS as `session_id` so a whole conversation is one AI Session. Without it, each exchange is its own session |
+| `user_header` | the request header naming the **end user**, used as `metadata.app_user` when no Kong consumer is authenticated. Caller-controlled: it labels a scan, it never authenticates one |
+| `transaction_header` | lets the caller name the **round** itself; by default the round is Kong's own request id, which the client also receives as `X-Kong-Request-Id` |
+| `tool_scan` | `calls` also scans the arguments a model generates for a tool call, which no `text_source` exposes; `catalogue` adds the `tools[]` declaration on top — expect a profile with the source-code detector to flag that one |
+| `context_messages` | caps how many of the most recent conversation parts are assembled, to bound cost and stay under the 2 MB scan limit |
+
+With a front-end that already knows its user and its conversation, naming two
+headers is the whole integration. For Open WebUI, for instance:
+
+```yaml
+params:
+  session_header: "x-openwebui-chat-id"
+  user_header: "x-openwebui-user-email"
+```
+
+### Optional add-on policies
+
+| File | What it does |
+|---|---|
+| [`config/kongctl/airs-diagnostics-log.yaml`](config/kongctl/airs-diagnostics-log.yaml) | writes the guardrail's own record — block reason, category, detections, per-phase scan latency, request id — to the data plane's standard output, so reporting a problem is one `docker logs` / `kubectl logs`. Carries an `enabled` switch and scrubs client credentials out of the record |
+| [`config/kongctl/airs-error-sanitizer.yaml`](config/kongctl/airs-error-sanitizer.yaml) | replaces the `HTTP 500` body Kong returns when Prisma AIRS cannot be consulted with a fixed generic one |
+
+Each has a `config/deck/` counterpart for the classic control plane.
+
+### What the client sees
+
+| Status | Meaning |
+|---|---|
+| `200` | allowed |
+| `400` | blocked by policy — body `{"error":{"message":"Blocked by Prisma AIRS [scan_id=...]"}}`. The category and the detection names never leave the gateway; the `scan_id` is how you find the full verdict in Strata Cloud Manager, or through `GET /v1/scan/results?scan_ids=` |
+| `500` | Prisma AIRS could not be consulted, and fail-closed refused the request rather than let it through unscanned |
 
 Full procedure, including the classic Gateway control plane variant, progressive
 rollout and troubleshooting: **[docs/deployment-guide.md](docs/deployment-guide.md)**.
@@ -293,6 +376,8 @@ config/kongctl/airs-guardrail.yaml   AI Gateway 2.x
 config/deck/airs-guardrail.yaml      classic Gateway control plane
 config/kongctl/airs-error-sanitizer.yaml   optional: generic body when Prisma AIRS cannot be consulted
 config/deck/airs-error-sanitizer.yaml      same, classic control plane
+config/kongctl/airs-diagnostics-log.yaml   optional: one diagnostics log on the node, with an on/off switch
+config/deck/airs-diagnostics-log.yaml      same, classic control plane
 scripts/test-airs.sh                 five-case validation suite, needs a live gateway
 scripts/run-lua-tests.sh             offline unit tests for the verdict functions
 scripts/test-verdict-functions.lua   the assertions those tests run
@@ -643,8 +728,11 @@ behaviour, the guardrail-failure client contract, the `metrics.*` export path,
   Konnect's request analytics.** A `file-log` policy attached next to
   `airs-scan` carries `ai.proxy.custom-guardrail` with our exact values, and
   `ai.proxy.guardrail_triggered` alongside it; the Konnect Requests analytics
-  API (`v2/api-requests`) still carries only the `ai-proxy` entry. See
-  [Design decisions](#design-decisions).
+  API (`v2/api-requests`) still carries only the `ai-proxy` entry. That policy
+  is shipped as `config/kongctl/airs-diagnostics-log.yaml`, writing to the data
+  plane's standard output so a problem report is one `docker logs` away, with
+  an `enabled` switch and the client-credential headers scrubbed out of the
+  record. See [Design decisions](#design-decisions).
 - **`proxy_config` works.** `http_proxy_host` / `http_proxy_port` on
   `airs-scan`, against an `http://` guardrail URL, routed both the INPUT and
   the OUTPUT call through the forward proxy. The `https_proxy_host` /
@@ -720,6 +808,133 @@ the untested column and probed three more limits:
   source code. The prompt now asks for prose; five consecutive runs pass. A
   block on that case points at the profile, and the category is in the scan
   log.
+
+An eleventh round traced a false positive from the Strata Cloud Manager UI back
+to this repository's own payload, and fixed it:
+
+- **Ordinary conversation was being blocked as prompt injection.** A two-turn
+  exchange — "What is the capital of France? / The capital of France is Paris. /
+  And Italy?" — came back `agent` + `injection`, 3/3. `text_source` joins
+  message content with no indication of who said what, so the model's own answer
+  arrived inside the prompt unattributed and read as an assertion planted there.
+  The threat report's `pi` snippet was exactly that concatenation. Prefixing
+  each turn `user:` / `assistant:` makes it benign while a real injection still
+  blocks, whether newest or earlier.
+- **`system:` must never be written into the scanned text.** Labelling the
+  system message that way is the shape of a system-prompt spoof and blocks the
+  whole conversation; the same content unlabelled is benign. Tool results and
+  unknown roles are unlabelled for the same reason.
+- **How it was traced, which is the reusable part.** The `scan_id` this
+  repository puts in the client-facing block message is what closed the loop:
+  it reaches the caller, so it is in the caller's logs, and
+  `GET /v1/scan/results?scan_ids=` then `GET /v1/scan/reports?report_ids=`
+  turn it into the detector list and the exact text that was judged. The AIRS
+  API has no list-by-session endpoint, so without that id there is nothing to
+  query.
+
+A tenth round used the same mechanism to label scans and to scan tool calls,
+and corrected a change made earlier the same day:
+
+- **Prisma AIRS judges the LAST element of `contents[]` and nothing else.** The
+  earlier elements are context, not scanned. Measured against a live tenant:
+  an injection alone blocks; the same injection as the first of two elements,
+  or the first of three, comes back `allow` / `benign`; as the last element it
+  blocks again. So a scan carries **one** element holding everything that must
+  be scanned. Splitting a conversation into one element per message reads like
+  the schema's intent — "the last element is the one that needs to be scanned,
+  and the previous elements are the context" — and silently stops scanning
+  every turn but the newest. This repository briefly did exactly that, for a
+  few hours on 2026-09-14, and the assertions now pin the single-element shape
+  for that reason.
+- **Tool calls can be scanned, behind `params.tool_scan`.** Tool definitions and
+  the arguments a model generates are absent from `$(content)` under every
+  `text_source`, so a tool call was only ever scanned on its way back in, as the
+  text of its result. Reading `kong.request.get_body()` recovers them and they
+  are appended to the scanned text. Measured with the guardrail in `INPUT` mode,
+  on a conversation whose injection sat solely inside a tool call's arguments:
+  allowed 5/5 with the setting off, blocked 5/5 with it on. `catalogue` adds the
+  `tools[]` declaration, which a profile with the source-code detector will flag,
+  since a JSON parameter schema reads as code.
+- **`metadata` carries the model, the client address and the end user.**
+  `ai_model`, `user_ip` and `app_user` are all reachable from a guardrail
+  function. `app_user` prefers the authenticated Kong consumer and falls back to
+  a configurable request header, which labels a scan and never authenticates
+  one. `user_ip` is the address Kong considers the client's, so behind an
+  untrusted load balancer it is the balancer: set `trusted_ips` on the data
+  plane.
+- **Everything degrades rather than breaks.** On a streamed response the
+  `OUTPUT` segments have no request context, so the payload is the text Kong
+  selected and `metadata` is `app_name` alone — and the segments are still
+  scanned, seven of them on a 700-character stream, the same count as before.
+  Every lookup is `pcall`-guarded.
+
+A ninth round sent the correlation identifiers, which this repository had
+declared out of reach for a configuration-only deployment:
+
+- **The Kong PDK is reachable inside a guardrail function.** `kong` and `ngx`
+  are tables in the function body. The earlier "no per-request value is
+  reachable" conclusion came from probing what the plugin injects as a named
+  ARGUMENT, which says nothing about the sandbox's globals. Working:
+  `kong.request.get_header`, `kong.request.get_body().model`,
+  `ngx.ctx.ai_model`, `kong.client.get_consumer()`, `kong.request.get_path()`,
+  `ngx.var.request_id`. Not working: `kong.router.*` and
+  `kong.log.serialize()`.
+- **`kong.ctx.shared` survives from the `INPUT` phase to the `OUTPUT` phase**,
+  so one identifier can be minted per exchange and reused by both scans. That
+  is what `airs_correlation` does. The identifiers nest: `transaction_id` is
+  one **round** — a prompt and the response it produced — and defaults to
+  Kong's request id, the value the client receives as `X-Kong-Request-Id`;
+  `session_id` is the **conversation** grouping several rounds, taken from a
+  request header and falling back to the round so an exchange is never split
+  across two sessions. Verified on the payloads reaching a lab echo server —
+  matching round identifiers across both phases, one session identifier across
+  two rounds — and accepted by the live Prisma AIRS tenant
+  (`scripts/test-airs.sh` 5/5). Confirmed in the Strata Cloud Manager AI
+  Sessions view: two rounds sent through Kong under one session header render
+  as one session holding two transactions of two scans each.
+- **`tr_id` is the older name of `session_id`, not of `transaction_id`**, so it
+  is not sent. Six probes straight against a live tenant's
+  `/v1/scan/sync/request`: a request carrying only `tr_id` comes back with
+  `session_id` set to that value and a generated `transaction_id`; a request
+  carrying only `transaction_id` comes back with a generated `session_id`; with
+  `tr_id` and `session_id` both supplied, `session_id` wins. Sending the round
+  under `tr_id` would therefore put the round identifier in the session slot.
+- **An unguarded PDK call is a silent fail-open on streams.** Same policy, same
+  streamed request: a function returning a constant produced 7 `OUTPUT` segment
+  scans, the same function calling `kong.request.get_header` without a `pcall`
+  produced **zero** — HTTP 200, stream delivered whole, nothing visible to the
+  client — and the `pcall` version produced 7 again. On a stream's `OUTPUT`
+  path there is no request context, and a raise there skips the scan instead of
+  failing the request. Every PDK call in `airs_correlation` is wrapped, and the
+  offline suite asserts that it never raises.
+- **A nil field is omitted from the scan payload; an empty string is sent as
+  JSON `false`.** So `airs_correlation` returns `nil`, never `""`, for an
+  identifier it cannot build — which is also what a streamed `OUTPUT` segment
+  gets, since it has no request context.
+
+An eighth round added the diagnostics log, and closed the "how does a customer
+report a problem" question:
+
+- **One log on the node, with a switch.** `config/kongctl/airs-diagnostics-log.yaml`
+  is a `file-log` policy writing the serializer record to the data plane's
+  standard output, so a problem report is `docker logs` or `kubectl logs` and
+  nothing else. Applied next to `airs-scan` with one `kongctl apply` and a `-f`
+  per file — repeated `-f` flags share one reference namespace, so
+  `!ref airs-diagnostics-log` resolves across them. One JSON record per request
+  on both the allowed and the blocked case; `enabled: false` re-applied
+  produces no record at all and leaves traffic untouched.
+- **The record carries no credential and no prompt.** Kong's serializer
+  includes request and response headers, so the policy removes `Authorization`,
+  `x-api-key`, `apikey`, `Cookie` and `Set-Cookie` through
+  `custom_fields_by_lua`: a request carrying the first three produced a record
+  with none of them and no trace of their values. No body is logged either way,
+  and `blocked_content` stays empty while `log_blocked_content` is `false`.
+- **Scan latency is in the record on every request.** `input_processing_latency`
+  and `output_processing_latency` measured 632 ms and 454 ms against the global
+  Prisma AIRS endpoint on an allowed request — the zeros seen in round four were
+  a local echo server answering in under a millisecond, not an unpopulated
+  field. Everything else guardrail-side is populated only on a block: an allowed
+  request carries no `scan_id`.
 
 What remains unconfirmed:
 

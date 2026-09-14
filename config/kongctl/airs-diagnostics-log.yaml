@@ -1,0 +1,120 @@
+# =============================================================================
+# Optional: one diagnostics log on the node, to send when something misbehaves
+#
+# Shape : AI Gateway 2.x control plane in Konnect, self-managed data planes
+# Tool  : kongctl apply -f config/kongctl/airs-diagnostics-log.yaml
+# Needs : nothing beyond the data plane. file-log is a core Kong plugin.
+#
+# WHY THIS EXISTS
+# The guardrail's own record — which request was blocked, by which category,
+# on which detections, in which direction, and how long the scan took — only
+# leaves the data plane through Kong's log serializer. Without a logging
+# policy it is nowhere: the Konnect Requests analytics view carries the
+# ai-proxy entry only, and the data plane's error log carries guardrail call
+# FAILURES but not verdicts. This policy writes the serializer record to the
+# node's standard output, so that reporting a problem is one command:
+#
+#     docker logs <data-plane-container>          # or
+#     kubectl logs <data-plane-pod>
+#
+# THE SWITCH
+# `enabled` below is the on/off control. Applying this file at all is the
+# first opt-in; after that, flip `enabled` and re-apply to mute or restore it
+# without detaching the policy. It ships enabled, because a log that is off
+# cannot explain an incident that has already happened.
+#
+# Attach it to the same AI Model as airs-scan or airs-prompt-scan:
+#
+#     policies:
+#       - !ref airs-scan
+#       - !ref airs-diagnostics-log
+#
+# VERIFICATION STATUS
+#   DOCUMENTED   : file-log config is exactly path, reopen and
+#                  custom_fields_by_lua
+#                  https://developer.konghq.com/plugins/file-log/reference/
+#                  Confirmed against the live 2.0.3 data plane's own schema:
+#                  those three fields and no others.
+#   DOCUMENTED   : custom_fields_by_lua maps a log field to a Lua chunk, and a
+#                  chunk returning nil removes the field from the record
+#                  https://developer.konghq.com/plugins/file-log/
+#   DOCUMENTED   : the AI Gateway 2.x declarative `type` accepts a non-AI
+#                  plugin name (kongctl declarative docs); file-log was
+#                  accepted as an ai_gateway_policies entry on 2026-09-14.
+#   DOCUMENTED   : the guardrail fields this record carries —
+#                  ai.proxy.custom-guardrail.{input,output}_block_reason /
+#                  _block_detail / _block_source / _processing_latency and
+#                  ai.proxy.guardrail_triggered.block_direction
+#                  https://developer.konghq.com/ai-gateway/ai-audit-log-reference/
+#   LAB-VERIFIED : 2026-09-14, Kong AI Gateway 2.0.3 / Kong Gateway 3.14.0.3,
+#                  against the live Prisma AIRS tenant. Applied next to
+#                  airs-scan on the model with
+#                  `kongctl apply -f airs-guardrail.yaml
+#                   -f airs-diagnostics-log.yaml -f <model>.yaml` — repeated
+#                  -f flags share one ref namespace, so !ref resolves across
+#                  the files. path: /dev/stdout puts one JSON record per
+#                  request into `docker logs`, on the allowed request and on
+#                  the blocked one. The custom_fields_by_lua removals work: a
+#                  request carrying Authorization, x-api-key and Cookie
+#                  produced a record with none of the three and no trace of
+#                  their values. `enabled: false` re-applied: no record at
+#                  all, traffic unaffected (HTTP 200).
+#
+# WHAT THE RECORD CONTAINS, AND WHAT IT DOES NOT
+# Measured on an allowed and on a blocked request (2026-09-14): the record
+# carries the guardrail verdict fields, ai-proxy token usage and model, Kong's
+# latency breakdown, the route and service, the response status, and
+# `request.id` — the same value Kong returns to the client as the
+# X-Kong-Request-Id header, which is what lets a user's complaint be matched to
+# a record. It carries NO prompt and NO model output: the serializer logs no
+# bodies, and guardrail_triggered.blocked_content stays empty as long as the
+# guardrail's own log_blocked_content is left false, as shipped.
+#
+# It does carry request and response HEADERS, so a client credential sent to
+# the gateway would be written to the node's log. The custom_fields_by_lua
+# entries below remove the usual carriers. Add any header your clients use to
+# authenticate, and review the first captured record before handing the
+# procedure to an operator. Note that custom_fields_by_lua applies to the
+# shared serializer table, so these removals also affect any logging plugin
+# that runs after this one.
+#
+# On an ALLOWED request the guardrail fields are present but empty — there is
+# no scan_id for a request that was not blocked. Correlating an allowed
+# request with its Prisma AIRS scan entry is not possible in a
+# configuration-only deployment; see the deployment guide, "Scan correlation".
+# The two latency fields are the exception: input_processing_latency and
+# output_processing_latency carry the real scan cost in milliseconds on every
+# request, allowed included (632 ms and 454 ms against the global Prisma AIRS
+# endpoint, LAB-VERIFIED 2026-09-14), which is what makes this record the
+# place to look when the complaint is slowness rather than a block.
+#
+# VOLUME. One JSON line per request, on the node's stdout, alongside Kong's own
+# log lines. Sized for diagnostics and for a pilot, not as a retention channel:
+# for permanent collection, use http-log against the customer's own collector
+# instead, with the same custom_fields_by_lua block.
+# =============================================================================
+
+ai_gateway_policies:
+  - ref: airs-diagnostics-log
+    ai_gateway: !lookup { id: !env AI_GATEWAY_ID }
+    name: airs-diagnostics-log
+    display_name: "Prisma AIRS - diagnostics log to the node's output"
+    type: file-log
+    # The on/off switch. false leaves the policy declared and attached but
+    # inert; no record is written. Re-apply after changing it.
+    enabled: true
+    config:
+      # The node's standard output, so the record lands in `docker logs` /
+      # `kubectl logs` with no volume to mount and no file to rotate. To write
+      # a real file instead, give a path inside a writable volume, for example
+      # /tmp/airs-diagnostics.log, and collect it from there.
+      path: /dev/stdout
+      reopen: false
+      # Remove the usual client-credential carriers from the record. These are
+      # the headers a caller sends to the gateway; add yours if it differs.
+      custom_fields_by_lua:
+        request.headers.authorization: "return nil"
+        request.headers.x-api-key: "return nil"
+        request.headers.apikey: "return nil"
+        request.headers.cookie: "return nil"
+        response.headers.set-cookie: "return nil"

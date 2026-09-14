@@ -42,6 +42,8 @@ config/kongctl/airs-guardrail.yaml   AI Gateway 2.x
 config/deck/airs-guardrail.yaml      classic Gateway control plane
 config/kongctl/airs-error-sanitizer.yaml   optional: generic body on a guardrail-call failure
 config/deck/airs-error-sanitizer.yaml      same, classic control plane
+config/kongctl/airs-diagnostics-log.yaml   optional: serializer record to the node's stdout, on/off switch
+config/deck/airs-diagnostics-log.yaml      same, classic control plane
 scripts/test-airs.sh                 end-to-end suite, needs a live gateway
 scripts/run-lua-tests.sh             offline verdict function tests
 scripts/test-verdict-functions.lua   the assertions those tests run
@@ -161,6 +163,57 @@ no competitive positioning. Working notes go in `CLAUDE.local.md`.
   schema from the data plane (the Admin API is not exposed on the AI Gateway
   image; `resty -e` with the plugin's `schema` module works, see
   `CLAUDE.local.md`).
+- **The Kong PDK is reachable inside a guardrail function body** — `kong` and
+  `ngx` are tables, `require` works — and **every PDK call must be wrapped in
+  `pcall`**. On the `OUTPUT` path of a streamed response the function runs with
+  no request context; an unguarded raise there does not fail the request, it
+  silently skips the guardrail call for that segment (LAB-VERIFIED 2026-09-14:
+  constant → 7 segment scans, unguarded PDK call → 0 with HTTP 200 and the
+  stream delivered whole, `pcall` → 7 again). An unguarded PDK call is a
+  fail-OPEN. `kong.ctx.shared` carries a value from the `INPUT` phase to the
+  `OUTPUT` phase of the same non-streamed request, which is what
+  `airs_correlation` uses to mint one `tr_id` per exchange. The older note in
+  `CLAUDE.local.md` saying no per-request value is reachable (Q7) is wrong: it
+  tested which names the plugin injects as arguments, not the sandbox globals.
+- **The scanned text must attribute each turn.** `text_source` joins message
+  content only, with no roles, and that alone gets ordinary conversation
+  blocked as prompt injection: the model's own previous answer, unattributed,
+  reads as an assertion planted in the prompt (LAB-VERIFIED 2026-09-14, 3/3,
+  with the threat report's `pi` snippet showing the exact text). `airs_contents`
+  prefixes `user:` and `assistant:`. It must NEVER prefix `system:` — that is
+  the shape of a system-prompt spoof and blocks the whole conversation; the
+  system message, tool results and unknown roles go in unlabelled.
+- **Prisma AIRS judges only the LAST element of `contents[]`.** The earlier
+  elements are context and are not scanned (LAB-VERIFIED 2026-09-14: an
+  injection first of two, or first of three, comes back `allow`/`benign`; the
+  same injection last, or alone, blocks). So `airs_contents` returns ONE
+  element containing everything that must be scanned. Splitting the
+  conversation into one element per message matches a natural reading of the
+  schema and silently stops scanning every turn but the newest — this
+  repository wrote that version and caught it in lab the same day. The offline
+  suite pins the single-element shape; do not "fix" it.
+- A `contents[].tool_event` is accepted and detected, with two server-side
+  allowlists: `ecosystem` must be `mcp` (`openai` → HTTP 400 `unsupported
+  ecosystem`) and `method` one of `tools/call` / `tools/list` (anything else →
+  `unsupported method`). But it is judged only as the last element, so it
+  cannot share a scan with the prompt. Tool text therefore goes inside the
+  scanned prompt element, behind `params.tool_scan`.
+- The AIRS correlation identifiers nest and must not be swapped:
+  `transaction_id` is one **round**, a prompt and the response it produced, and
+  `session_id` is the **conversation** grouping several rounds. `tr_id` is the
+  older name of `session_id`, NOT of `transaction_id` — measured on a live
+  tenant, a request carrying only `tr_id` comes back with `session_id` set to
+  that value, and `session_id` wins when both are sent. It is therefore never
+  sent from this repository. Neither the AI Sessions page ("calls sharing the
+  same transaction ID") nor the field descriptions settle this; only the
+  tenant's own echo does. The gateway can mint a round on its own (Kong's
+  request id) but never a conversation — only the caller knows where one
+  starts, so `session_id` comes from a request header and falls back to the
+  round.
+- **A `request.body` field that is `nil` is omitted from the scan payload; a
+  field that is an empty string is rendered as JSON `false`** (LAB-VERIFIED
+  2026-09-14). A function that cannot build an optional identifier must return
+  `nil` for it, never `""`.
 - `metrics.block_detail` must evaluate to a Lua table. As a string, the data
   plane logs `metric input_block_detail has unexpected type string, expected
   table` at every request and drops the metric (LAB-VERIFIED 2026-09-14).
@@ -191,7 +244,7 @@ no competitive positioning. Working notes go in `CLAUDE.local.md`.
   which callers wire to `metrics.block_detail`; `metrics.block_reason` receives
   the generic `block_message` (with its `scan_id`) for correlation, and neither
   ever feeds `response.block_message` with a category.
-- Every copy of `airs_verdict` and every copy of `airs_contents` must be
+- Every copy of `airs_verdict`, `airs_contents` and `airs_correlation` must be
   byte-identical: across `config/kongctl/` and `config/deck/`, and across every
   guardrail instance within one file. `scripts/run-lua-tests.sh` enforces this
   and runs its assertions against the shipped Lua (no copy lives in the test
