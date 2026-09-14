@@ -14,19 +14,29 @@ Alto Networks or Kong product, and covered by no support commitment from either
 vendor — see [Disclaimer](#disclaimer). Provided under the MIT licence.*
 
 > [!IMPORTANT]
-> **Streaming bypasses response scanning, silently.** When a client sets
-> `stream: true`, Kong never invokes the `OUTPUT` phase: the guardrail service
-> receives no call, there is no error and no warning, and the complete SSE stream
-> reaches the client. Prompt scanning is unaffected. Any caller can therefore opt
-> itself out of response scanning with one flag in its own request body.
+> **Correction, 2026-09-14: streaming is scanned, in segments — not skipped.**
+> An earlier version of this callout said `stream: true` silently bypassed
+> response scanning. That was wrong. The `OUTPUT` phase does run on a stream:
+> it scans the content in segments of about `response_buffer_size` bytes, each
+> segment its own call to Prisma AIRS. The 2026-09-08 measurement that reported
+> zero calls was reading the effect of this repository's own
+> `response_buffer_size: 65536`: no stream in that run ever accumulated 65536
+> bytes before ending, so the threshold was never crossed — not because Kong
+> skipped the phase.
 >
-> This is Kong's behaviour, measured on a live gateway on 2026-09-08, not a
-> configuration choice made here — no setting in this repository changes it.
-> Scope your deployment around it before you deploy: either refuse `stream: true`
-> at the gateway, or accept prompt-only coverage on the models that must stream.
-> The measurement is in
-> [Streaming silently bypasses response scanning](#streaming-silently-bypasses-response-scanning);
-> the two supported ways to handle it are in [Design decisions](#design-decisions).
+> That still leaves a real gap. A block on a flagged segment arrives after that
+> segment has already reached the client — the stream is cut with no terminal
+> chunk, on top of an HTTP 200 already sent — so streaming coverage prevents
+> what follows a detection, not the detection itself, and content still below
+> the threshold when the stream ends is never scanned. A non-streamed response
+> is always scanned in one call carrying the whole body.
+>
+> The shipped configuration now pairs `airs-scan` with `response_streaming: deny`
+> on the AI Model (kongctl) or the `ai-proxy-advanced` policy (deck), so a model
+> under full coverage cannot stream at all, and keeps `airs-prompt-scan`,
+> prompt only, for models that must stream. Details in
+> [Streaming responses are scanned in segments](#streaming-responses-are-scanned-in-segments)
+> and [Design decisions](#design-decisions).
 
 ---
 
@@ -38,7 +48,7 @@ consequences follow, and together they are the reason this repository exists.
 
 **Custom Lua plugins have no place on an AI Gateway 2.x control plane.** The
 Prisma AIRS plugin published by Palo Alto Networks
-([prisma-airs-integrations](https://github.com/PaloAltoNetworks/prisma-airs-integrations))
+([prisma-airs-integrations, `custom-plugin-v3`](https://github.com/PaloAltoNetworks/prisma-airs-integrations/tree/main/Kong/custom-plugin-v3))
 remains fully valid where a custom plugin can still be loaded — self-hosted Kong
 Gateway, and Konnect hybrid with a
 [custom data plane image](https://developer.konghq.com/custom-plugins/konnect-hybrid-mode/).
@@ -46,9 +56,26 @@ It cannot be deployed on an AI Gateway 2.x control plane, where configuration is
 expressed as AI entities and policies rather than as plugins shipped inside the
 data plane image. Teams moving to v2 lose the integration they had.
 
+This is a control-plane restriction, not a runtime one. The AI Gateway 2.x data
+plane is itself a Kong Gateway 3.14.0.3 runtime carrying an AI Gateway version
+label — its telemetry reports `node_version=3.14.0.3` alongside
+`kong_aigw_version=2.0.3`, and `kong version` inside the container prints "Kong
+AI Gateway 2.0.3". What actually refuses the custom Lua plugin path on 2.x is
+the Konnect API: applying an `ai_gateway_policies` entry of
+`type: prisma-airs-intercept` is rejected outright, HTTP 400, "policy type
+'prisma-airs-intercept' is not supported" (measured 2026-09-14). The catalogue
+is closed at the control plane, independently of what the data plane
+underneath could otherwise run.
+
 **The v2 policy catalogue has no Prisma AIRS type.** It ships vendor-specific
-guardrail policies for several third-party providers; Prisma AIRS is not among
-them. There is nothing to select in the catalogue.
+guardrail policies for `ai-aws-guardrails`, `ai-azure-content-safety`,
+`ai-gcp-model-armor` and `ai-lakera-guard`, joined by NVIDIA NeMo Guardrails
+since AI Gateway 2.0.1 (see the
+[changelog](https://developer.konghq.com/ai-gateway/changelog/)) — the 2.0.3
+data plane image used in this repository's lab work ships
+`ai-nvidia-nemo-guardrail` in its plugin directory, ahead of that policy
+appearing on the catalogue page. Prisma AIRS is not among them, on either
+page. There is nothing to select in the catalogue.
 
 What v2 does provide is `ai-custom-guardrail`, Kong's supported extension point
 for calling an external guardrail service over HTTP. This repository uses it to
@@ -159,20 +186,39 @@ The concatenation itself is worth knowing: messages are joined with `\n\n` in
 Under `concatenate_all_content` the system prompt is included, which is a
 false-positive surface if it contains instructions that read like an injection.
 
-### Streaming silently bypasses response scanning
+### Streaming responses are scanned in segments
 
-With `stream: true`, the `OUTPUT` phase is never invoked. Not deferred, not
-partial: the guardrail service receives no call at all, and the complete SSE
-stream reaches the client. Prompt scanning still applies.
+Corrected 2026-09-14; this section previously said the `OUTPUT` phase was
+never invoked on a `stream: true` response, and that was wrong. The phase does
+run: it scans the streamed content in segments of about
+`response_buffer_size` bytes, each segment as one call to Prisma AIRS. Content
+still below the threshold when the stream ends is never scanned, so a short
+stream, or one that never fills a segment, can go unscanned even though the
+phase ran.
 
-Measured on 2026-09-08 by pointing the `OUTPUT` policy at a guardrail service
-that answers `action: block` for everything. The non-streamed request was
-rejected with HTTP 400. The streamed request returned HTTP 200 and all 34 SSE
-chunks, and the guardrail service logged one single call — the non-streamed one.
+Measured with the schema default (100 bytes — this repository no longer
+overrides it, see [Design decisions](#design-decisions)): a 309-character
+stream produced three `OUTPUT` calls, of 101, 104 and 103 characters — 308 of
+309 characters scanned. At `response_buffer_size: 1`, the same kind of stream
+produced 69 calls, the first segment still close to 100 bytes and the rest one
+chunk each. At
+`response_buffer_size: 65536` — the value this repository shipped until
+2026-09-14 — the same stream produced **zero** `OUTPUT` calls: it never
+accumulated 65536 bytes before ending. That configuration choice, not a Kong
+limitation, is what the 2026-09-08 measurement below actually captured.
 
-There is no error and no warning, so a client that sets `stream: true` silently
-downgrades itself to prompt-only coverage. See
-[Design decisions](#design-decisions) for the two ways to handle it.
+A non-streamed response is always scanned in one call carrying the whole body,
+whatever `response_buffer_size` is.
+
+A block verdict on a streamed segment arrives too late for that segment: by
+the time Prisma AIRS answers, the flagged segment has already reached the
+client (measured: 108 characters received by the client, more than the
+102-character segment that triggered the block). The stream is then cut — no
+further chunks and no `finish_reason` chunk, on top of an HTTP 200
+already sent. So streaming coverage prevents what follows a detection, not the
+detection itself, and each segment is scanned without the context of the ones
+before it. See [Design decisions](#design-decisions) for the two ways to
+handle it.
 
 The `OUTPUT` phase also carries no prompt context alongside the response it
 scans, which is a design limit rather than a schema gap.
@@ -219,6 +265,7 @@ rollout and troubleshooting: **[docs/deployment-guide.md](docs/deployment-guide.
 docs/deployment-guide.md             step-by-step deployment procedure
 docs/sources.md                      canonical upstream references
 docs/lab-tool-calls.md               lab procedure: is function calling scanned?
+docs/lab-streaming.md                lab procedure: is a streamed response scanned, and how?
 config/kongctl/airs-guardrail.yaml   AI Gateway 2.x
 config/deck/airs-guardrail.yaml      classic Gateway control plane
 scripts/test-airs.sh                 five-case validation suite, needs a live gateway
@@ -276,14 +323,52 @@ real detection. Naming the detection to the caller is an evasion oracle: it lets
 an attacker use the block response itself to map which inputs trip which
 detector. The detection detail is not lost: it is in the Prisma AIRS scan logs
 in Strata Cloud Manager, correlated by `scan_id`, which is the channel to rely
-on. The configuration also routes it to `metrics.block_reason` /
-`metrics.block_detail`; the schema accepts those fields, but they do not surface
-on the data plane's own metrics endpoint, even with the Prometheus policy and
-`ai_metrics` enabled — whose AI families are LLM request, cost and token
-counters, not guardrail metrics. Treat Kong-side metrics as unconfirmed and
-Strata Cloud Manager as the record. Palo Alto's own reference
-integration ([`request-callout` config](https://github.com/PaloAltoNetworks/prisma-airs-integrations))
+on. The configuration also routes it to `metrics.block_reason` (the same
+generic message, with `scan_id`, for correlation) and `metrics.block_detail`
+(category and detection names) — the schema accepts both fields, but
+`block_detail` must evaluate to a Lua table, not a string. Until 2026-09-14
+`airs_verdict` returned `detail` as a string, and the data plane logged a
+warning on every single request, allowed or blocked, in both phases —
+`metric input_block_detail has unexpected type string, expected table` —
+which is very probably why nothing guardrail-related was seen on the metrics
+endpoint at all. `airs_verdict` now returns `detail` as a table,
+`{ reason, category, detections }` (`reason` the same string it always
+returned, `detections` the sorted detection names, `category` the AIRS
+category, or `"unavailable"` on a missing verdict); the warning is gone,
+measured over the same request set, and `block_message` is unchanged. Whether
+the templated value is exported to Konnect's own AI analytics view is still
+unconfirmed — that needs the Konnect UI, not just the absence of a warning —
+so Strata Cloud Manager's scan log remains the record to rely on. Palo Alto's
+own reference integration ([`request-callout` config](https://github.com/PaloAltoNetworks/prisma-airs-integrations))
 follows the same pattern, returning a generic "Blocked by AI security scan".
+
+**Block response format.** The shipped contract stays `rejection_mode: none`
+(the schema default): HTTP 400 with the generic body,
+`{"error":{"message":"<block_message>"}}`. Two more values exist on a 2.0.3
+data plane: `verbose` returns HTTP 403 with a structured body,
+`{"error":{"plugin":"ai-custom-guardrail","reason":"<block_message>","code":"GUARDRAIL_BLOCKED","type":"guardrail_rejected"}}`
+— still only the generic message, no category or detection — and `stealth`
+returns HTTP 403 `{"error":{"message":"request forbidden"}}`, dropping the
+`scan_id` too. Both are announced in the
+[AI Gateway 2.0.1 changelog](https://developer.konghq.com/ai-gateway/changelog/)
+(2026-07-29) but are not yet in the schema published on the reference page, so
+both configuration files carry them commented out rather than shipped —
+turning them on would fail `scripts/check-plugin-schema.py --schema` until
+Kong publishes the field. `verbose` is the option to reach for if a caller
+needs a machine-readable code instead of parsing the message. A third field
+from the same changelog entry, `log_blocked_content`, is commented out
+alongside them; enabling it added nothing visible to the data plane's own
+error log in this round, and it stays off in any case, since prompts are
+personal data.
+
+**Pilot mode.** `continue_on_detection: true` — also commented out, same
+reason — turns a block verdict into HTTP 200 with the model's actual answer:
+the guardrail is still called, in both phases, but nothing is refused. It is a
+monitoring switch for a pilot phase, alongside the Prisma AIRS profile's own
+alert-only option, and it changes only what happens after a verdict is
+reached. It is not a substitute for the fail-open change described above for
+`stop_on_error`: that setting governs what happens when the call to Prisma
+AIRS itself fails, which `continue_on_detection` does not touch.
 
 **Secrets in the slot built for them.** The API key is a
 `{vault://env/airs-token}` reference resolved by the data plane at runtime, and
@@ -295,19 +380,29 @@ the credential no longer appears in the `conf` table that guardrail functions
 receive. The key never transits the SaaS control plane and never appears in
 version control.
 
-**Streaming, and what to do about it.** Response scanning is not merely
-"incompatible" with SSE — it is skipped, silently, as measured above. Two
-workable answers, and the choice is a policy one:
+**Streaming, and what to do about it.** Response scanning does run on a
+stream — see
+[Streaming responses are scanned in segments](#streaming-responses-are-scanned-in-segments) —
+but only in per-segment detect-after-delivery scans, and a block on a flagged
+segment cannot stop that segment from reaching the client. That is a weaker
+guarantee than the one-shot scan of a non-streamed response, so the shipped
+configuration does not rely on it for a model where response coverage
+matters:
 
-- attach `airs-scan` and **refuse streaming** at the gateway or in the client
-  contract, so that response coverage is real for every request;
-- attach `airs-prompt-scan` on models that must stream, and state plainly that
-  those models have prompt-only coverage.
+- `airs-scan` is attached together with `response_streaming: deny` — on the AI
+  Model (kongctl) or on the `ai-proxy-advanced` policy (deck) — so a
+  `stream: true` request is refused before it reaches the model or the
+  guardrail
+  ([AI Gateway streaming](https://developer.konghq.com/ai-gateway/streaming/)).
+  Measured: HTTP 400,
+  `{"error":{"message":"response streaming is not enabled for this LLM"}}`.
+- models that must stream take `airs-prompt-scan` instead, `response_streaming`
+  left at its default, and carry prompt-only coverage, stated plainly.
 
-What does not work is attaching `airs-scan` to a streaming model and assuming
-the response is inspected. `response_buffer_size: 65536` remains a starting
-value for the buffered case; it has no effect on a streamed response, since no
-scan happens at all.
+`response_buffer_size` is no longer set in either policy: the schema default
+(100) applies, and the field only has an effect on a streamed response in the
+first place — a non-streamed response is always scanned in one call regardless
+of its value.
 
 **Measured cost.** One lab, one geography: data plane in France, the **global**
 Prisma AIRS endpoint rather than a regional one, and a local Ollama answering in
@@ -339,8 +434,8 @@ published Kong plugin schema and the Prisma AIRS OpenAPI client — see
 offline, and the whole configuration was exercised against a live gateway:
 
 ```bash
-./scripts/run-lua-tests.sh     # 63 assertions, offline
-./scripts/test-airs.sh         # 5 cases, needs a live gateway
+./scripts/run-lua-tests.sh     # offline verdict suite
+./scripts/test-airs.sh         # 5 asserted cases plus a streaming probe, needs a live gateway
 ```
 
 **Lab run of 2026-09-08.** Konnect AI Gateway 2.x control plane, one
@@ -371,8 +466,11 @@ What that run settled, all previously `SYNTHESIZED`:
   [Scope and limits](#scope-and-limits).
 - **`guarding_mode: BOTH` covers both phases in one policy**, with `$(source)`
   distinguishing them, and the two scans are sequential.
-- **Streaming skips the `OUTPUT` phase entirely**, with no error — see
-  [Scope and limits](#scope-and-limits).
+- **Streaming skips the `OUTPUT` phase entirely, with no error** — this is
+  what the run measured on 2026-09-08, and the conclusion was wrong. Corrected
+  2026-09-14: the phase does run on a stream, in segments; the 2026-09-08
+  setup had `response_buffer_size: 65536`, which no stream in that run ever
+  filled. See [Scope and limits](#scope-and-limits).
 
 Confirmed against the schema and the published examples: `guarding_mode`,
 `text_source`, `params`/`request.*`/`response.*`/`functions`, `timeout`,
@@ -410,22 +508,64 @@ A second round on the same gateway settled the rest:
   as dead code: it is real cover if a Kong release ever passes `$(resp)` as a
   string, and without it that release would fail every request closed.
 
+A third round, 2026-09-14, corrected the streaming finding above and settled
+four more items:
+
+- **Streaming is scanned, not skipped.** The `OUTPUT` phase runs on a
+  `stream: true` response in segments of about `response_buffer_size` bytes: a
+  309-character stream produced three calls (101 / 104 / 103 characters) at
+  the schema default of 100, 69 calls at `response_buffer_size: 1`, and zero
+  calls at `response_buffer_size: 65536` — the value this repository shipped
+  until this round, which is why the 2026-09-08 run saw nothing. A block on a
+  flagged segment cuts the stream after that segment has already reached the
+  client, with no terminal chunk, on top of an HTTP 200 already sent. See
+  [Scope and limits](#scope-and-limits).
+- **`metrics.block_detail` must be a Lua table.** As a string it produced a
+  data-plane warning on every request, in both phases, regardless of the
+  verdict — plausibly why nothing guardrail-related was ever seen on the
+  metrics endpoint. `airs_verdict` now returns `detail` as
+  `{ reason, category, detections }`; the warning is gone, `block_message` is
+  unchanged.
+- **Four more config fields exist on a 2.0.3 data plane but are not yet on the
+  published schema page**: `rejection_mode` (`none` / `stealth` / `verbose`),
+  `continue_on_detection`, `log_blocked_content`, and `proxy_config`, all
+  announced in the
+  [2.0.1 changelog](https://developer.konghq.com/ai-gateway/changelog/).
+  Measured behaviour is in [Design decisions](#design-decisions); the shipped
+  configuration keeps only schema-published keys and carries the rest
+  commented out, so `scripts/check-plugin-schema.py --schema` keeps passing.
+- **The AI Gateway 2.x runtime is Kong Gateway 3.14.0.3**, carrying an AI
+  Gateway version label; what actually refuses the custom Lua plugin path is
+  the Konnect control plane, which rejects a `type: prisma-airs-intercept`
+  policy with HTTP 400, "policy type 'prisma-airs-intercept' is not
+  supported". See [Why this exists](#why-this-exists).
+- **`response_streaming: deny` refuses a stream before any guardrail call.**
+  Measured: HTTP 400,
+  `{"error":{"message":"response streaming is not enabled for this LLM"}}`, on
+  the AI Model. Adopted for `airs-scan`; see
+  [Design decisions](#design-decisions).
+
 What remains unconfirmed:
 
-- whether `metrics.*` templates are rendered and exported anywhere. The fields
-  apply and traffic flows, but nothing guardrail-related appears on the data
-  plane's metrics endpoint. Checking Konnect's AI analytics view is the
-  remaining step;
-- the `response_buffer_size: 65536` value, a starting point rather than a
-  measured figure, and one that only applies to buffered responses.
+- whether `metrics.*` templates are exported to Konnect's own AI analytics
+  view. The data-plane warning that likely explained the earlier silence is
+  fixed (above), but the UI check itself is still outstanding;
+- the `finish_reason: 'blocked_by_guard'` terminal chunk the schema text
+  describes for a blocked stream: not observed in this round either;
+- `proxy_config`, for data planes whose egress goes through a forward proxy:
+  present on a 2.0.3 data plane, not exercised.
 
 Validate in a non-production environment before this reaches production traffic.
 
 ## Related
 
 - Palo Alto Networks, official Kong integration assets:
-  [PaloAltoNetworks/prisma-airs-integrations](https://github.com/PaloAltoNetworks/prisma-airs-integrations)
-  (custom Lua plugin and `request-callout` variants, for Kong Gateway and Konnect hybrid)
+  [PaloAltoNetworks/prisma-airs-integrations](https://github.com/PaloAltoNetworks/prisma-airs-integrations),
+  specifically the
+  [`custom-plugin-v3`](https://github.com/PaloAltoNetworks/prisma-airs-integrations/tree/main/Kong/custom-plugin-v3)
+  flavours (buffered SSE scanning, MCP coverage) and the `request-callout`
+  variant, for Kong Gateway and Konnect hybrid. Its deployment guide names this
+  repository as the worked reference for AI Gateway 2.x
 - Kong, [AI Custom Guardrail](https://developer.konghq.com/plugins/ai-custom-guardrail/)
 - Kong, [AI Gateway Policies](https://developer.konghq.com/ai-gateway/policies/)
 

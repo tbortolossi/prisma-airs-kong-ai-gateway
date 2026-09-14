@@ -36,6 +36,7 @@ CHANGELOG.md                         released changes
 docs/deployment-guide.md             customer-facing procedure
 docs/sources.md                      canonical upstream references
 docs/lab-tool-calls.md               lab procedure: is function calling scanned?
+docs/lab-streaming.md                lab procedure: is a streamed response scanned, and how?
 config/kongctl/airs-guardrail.yaml   AI Gateway 2.x
 config/deck/airs-guardrail.yaml      classic Gateway control plane
 scripts/test-airs.sh                 end-to-end suite, needs a live gateway
@@ -125,13 +126,32 @@ no competitive positioning. Working notes go in `CLAUDE.local.md`.
   vault resolution — where a string is expected. A permissive fallback such as
   `content or ""` would then ship it to Prisma AIRS as scanned text. `airs_contents`
   in both files raises on anything but a string; there is no fallback.
-- The schema describes `response_buffer_size` (default 100) as bytes buffered
-  from upstream before each call to the guardrail service, response guard only,
-  and `allow_masking`'s description notes streaming is disabled when it is
-  enabled — together suggesting `OUTPUT` scanning buffers and re-scans in
-  chunks rather than requiring the full response first. This is not yet
-  confirmed against a live gateway (see `CLAUDE.local.md`); until it is,
-  streaming models get `airs-prompt-scan`, not `airs-scan`.
+- Streaming, LAB-VERIFIED 2026-09-14 (correcting the 2026-09-08 reading): the
+  `OUTPUT` phase does run on a `stream: true` response, in segments of about
+  `response_buffer_size` bytes (schema default 100), one guardrail call per
+  segment; content still below the threshold when the stream ends is never
+  scanned; a block cuts the stream after the flagged segment has already been
+  delivered, with no terminal chunk and HTTP 200 already sent. Non-streamed
+  responses are always one call carrying the whole body, whatever the buffer
+  value. The `65536` this repository shipped is what produced "no OUTPUT call"
+  on 2026-09-08. The shipped config therefore no longer sets
+  `response_buffer_size`, pairs `airs-scan` with `response_streaming: deny`
+  on the model (kongctl) or on `ai-proxy-advanced` (deck), and keeps
+  `airs-prompt-scan` for models that must stream. Never reintroduce a large
+  buffer value "to scan a whole streamed answer at once": it scans nothing.
+- The published schema page lags the data plane. The 2.0.3 data plane
+  (Kong Gateway 3.14.0.3) also has `rejection_mode` (`none` / `stealth` /
+  `verbose`), `continue_on_detection`, `log_blocked_content` and
+  `proxy_config`, announced in the AI Gateway 2.0.1 changelog and absent from
+  `window.schema`. They ship commented out: `check-plugin-schema.py --schema`
+  validates against the published page and would fail on them. Get the live
+  schema from the data plane (the Admin API is not exposed on the AI Gateway
+  image; `resty -e` with the plugin's `schema` module works, see
+  `CLAUDE.local.md`).
+- `metrics.block_detail` must evaluate to a Lua table. As a string, the data
+  plane logs `metric input_block_detail has unexpected type string, expected
+  table` at every request and drops the metric (LAB-VERIFIED 2026-09-14).
+  `metrics.block_reason` accepts a string.
 - Prisma AIRS endpoints are regional. The global endpoint is the default; keep
   the URL a single point of change.
 
@@ -143,7 +163,9 @@ no competitive positioning. Working notes go in `CLAUDE.local.md`.
   `airs_verdict` may attempt a `cjson.safe` decode inside a `pcall` when `$(resp)`
   arrives as a string, because Kong documents `$(resp)` as a string in the
   `OUTPUT` phase. The `pcall` must fail closed if the require or the decode fails.
-- `airs_verdict` returns `{ block, block_message, detail }`. Only
+- `airs_verdict` returns `{ block, block_message, detail }`, where `detail` is
+  a table `{ reason, category, detections }` (a string is rejected by the
+  metric, see above). Only
   `action == "allow"` passes; any other action, a missing or non-string action,
   or `category` of `"error"` / `"timeout"` blocks. `block_message` is always the
   fixed, generic client-facing text ("Blocked by Prisma AIRS", optionally with
@@ -155,15 +177,15 @@ no competitive positioning. Working notes go in `CLAUDE.local.md`.
 - Every copy of `airs_verdict` and every copy of `airs_contents` must be
   byte-identical: across `config/kongctl/` and `config/deck/`, and across every
   guardrail instance within one file. `scripts/run-lua-tests.sh` enforces this
-  and runs 63 assertions against the shipped Lua (no copy lives in the test file
-  itself).
+  and runs its assertions against the shipped Lua (no copy lives in the test
+  file itself; the count is printed by the script).
 - Shell: `set -u`, and no `set -e` in `test-airs.sh` specifically (a non-zero curl
   must not abort the remaining cases). Scripts must pass `shellcheck`.
 - Documentation: English. Every external claim carries a link.
 
 ## Before opening a PR
 
-- `./scripts/run-lua-tests.sh` passes (63 assertions).
+- `./scripts/run-lua-tests.sh` passes.
 - `python3 scripts/check-plugin-schema.py --parity` passes (kongctl/deck config
   blocks identical per instance).
 - `python3 scripts/check-plugin-schema.py --schema` passes (every key and enum

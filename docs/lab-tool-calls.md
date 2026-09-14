@@ -137,9 +137,13 @@ also answers three of the other open questions:
   echo server answers immediately, so the delta is the plugin's own overhead,
   not the network path to Prisma AIRS.
 
-Whether `$(resp)` is a table or a string in the `OUTPUT` phase needs the same
-setup pointed at the response scan policy instead, which is outside the scope of
-this procedure.
+Whether `$(resp)` is a table or a string in the `OUTPUT` phase, and whether a
+streamed response is scanned at all, need the same setup pointed at the
+response scan policy instead. That is a separate procedure: see
+[`docs/lab-streaming.md`](lab-streaming.md). Streamed responses are not
+skipped. They are scanned in segments, which is easy to read as "skipped"
+from latency or coverage numbers alone. lab-streaming.md is the procedure that
+tells the two apart.
 
 ---
 

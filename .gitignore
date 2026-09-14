@@ -37,3 +37,6 @@ Thumbs.db
 
 # ---- Local lab, not published until it has proved something ----
 lab/
+
+# ---- Private docs ----
+docs/private

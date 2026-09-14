@@ -53,20 +53,32 @@
 #   LAB-VERIFIED : with text_source concatenate_all_content, $(content) is the
 #                 message contents joined by "\n\n", system prompt included,
 #                 and the model output alone in the OUTPUT phase.
-#   LAB-VERIFIED : with stream: true the OUTPUT phase is never invoked. A
-#                 guardrail answering "block" to everything received no call,
-#                 and every SSE chunk reached the client with HTTP 200; the
-#                 same policy blocked the non-streamed request with 400.
-#                 Response scanning covers buffered responses only.
+#   LAB-VERIFIED : streamed responses ARE scanned (2026-09-14, correcting the
+#                 2026-09-08 note that said the OUTPUT phase was never
+#                 invoked). With stream: true the OUTPUT phase runs once per
+#                 segment of about response_buffer_size bytes, each segment as
+#                 its own contents[].response call, and whatever is still below
+#                 the threshold when the stream ends is never scanned. That is
+#                 why the 2026-09-08 run, with response_buffer_size 65536, saw
+#                 no OUTPUT call at all. A block verdict on a segment cuts the
+#                 stream, but that segment has already been delivered and HTTP
+#                 200 already sent. Non-streamed responses are scanned in one
+#                 call carrying the whole body, whatever the buffer size. The
+#                 posture for airs-scan is therefore to refuse streaming at the
+#                 model (response_streaming: deny, attachment extract below).
 #   LAB-VERIFIED : a function that raises refuses the request with HTTP 500
 #                 before the model is called, independent of stop_on_error.
 #                 The Lua error text reaches the client verbatim, so error()
 #                 messages must never carry anything sensitive.
-#   SYNTHESIZED : metrics.* accepting an expression template. Inferred from the
-#                 description of response.block ("template or string to
-#                 evaluate"); the schema says nothing of the kind for metrics.
-#   SYNTHESIZED : the response_buffer_size value. 65536 is a starting point
-#                 to be tuned in lab, not a measured figure.
+#   LAB-VERIFIED : metrics.* templates are evaluated, and block_detail must
+#                 evaluate to a TABLE. With a string the data plane logged
+#                 "metric input_block_detail has unexpected type string,
+#                 expected table" at every request and dropped the metric
+#                 (2026-09-14); airs_verdict.detail is a table for that reason.
+#                 Export to Konnect AI analytics is not verified.
+#   LAB-VERIFIED : response_buffer_size is left at its schema default (100).
+#                 The 65536 this repository shipped until 2026-09-14 turned a
+#                 streamed response into silence (see the streaming entry).
 #   NOT PRESENT : retry and cache options. The plugin schema has neither.
 #
 # Replace params.profile with your Prisma AIRS security profile name, and
@@ -79,11 +91,12 @@ ai_gateway_policies:
   # ---------------------------------------------------------------------------
   # airs-scan: prompt and response
   # Scans the prompt before it reaches the model and the model output before
-  # it reaches the client, for buffered responses only. LAB-VERIFIED
-  # 2026-09-08: with stream: true the OUTPUT phase is never invoked, the
-  # guardrail receives no call, and every SSE chunk reaches the client with
-  # HTTP 200. Models that serve streaming responses get airs-prompt-scan, and
-  # the README ("Scope and limits") states the gap to the customer.
+  # it reaches the client. On a non-streamed response the output is one scan
+  # of the whole body. On a streamed response it is one scan per segment of
+  # about response_buffer_size bytes, the flagged segment already delivered
+  # by the time it is blocked (LAB-VERIFIED 2026-09-14). Pair this policy
+  # with response_streaming: deny on the model (attachment extract below);
+  # models that must stream get airs-prompt-scan instead.
   # ---------------------------------------------------------------------------
   - ref: airs-scan
     ai_gateway: !lookup { id: !env AI_GATEWAY_ID }
@@ -106,13 +119,33 @@ ai_gateway_policies:
       ssl_verify: true
       stop_on_error: true
 
-      # SYNTHESIZED value. The schema default is 100 and describes the field as
-      # "the amount of bytes receiving from upstream to be buffered before
-      # sending to the guardrail service", response guard only. At 100 bytes
-      # a response would trigger many AIRS calls, each on a fragment without
-      # context, with part of the response already delivered before a block.
-      # 65536 keeps a typical completion in a single scan. Tune in lab.
-      response_buffer_size: 65536
+      # Present on Kong AI Gateway 2.0.1+ data planes (changelog,
+      # https://developer.konghq.com/ai-gateway/changelog/), LAB-VERIFIED
+      # 2026-09-14 on 2.0.3 / Kong Gateway 3.14.0.3, but ABSENT from the
+      # published schema page: uncommenting one makes
+      # scripts/check-plugin-schema.py --schema fail until Kong publishes it.
+      #   rejection_mode         none (default) is today's contract, HTTP 400
+      #                          with the message. verbose: HTTP 403, structured
+      #                          body, code GUARDRAIL_BLOCKED, the message as
+      #                          "reason", no detail leaked. stealth: HTTP 403
+      #                          "request forbidden", message and scan_id lost.
+      #   continue_on_detection  true is monitor mode for pilots: a block
+      #                          verdict passes with HTTP 200, the guardrail is
+      #                          still called. Does not cover a failed call.
+      #   log_blocked_content    keep false, prompts are PII.
+      # rejection_mode: verbose
+      # continue_on_detection: true
+      # log_blocked_content: false
+
+      # response_buffer_size is deliberately NOT set; the schema default (100)
+      # applies. LAB-VERIFIED 2026-09-14: it only matters for streams. A
+      # non-streamed response is always scanned in one call carrying the whole
+      # body. A streamed response is scanned in segments of about that many
+      # bytes, and whatever remains below the threshold when the stream ends
+      # is never scanned: at 65536, the value shipped until 2026-09-14, a
+      # typical completion produced no OUTPUT call at all, which is what the
+      # 2026-09-08 run measured. A block on a segment cuts the stream after
+      # that segment has already reached the client.
 
       params:
         profile: "kong-airs-prod"
@@ -144,14 +177,16 @@ ai_gateway_policies:
         block: "$(airs_verdict.block)"
         block_message: "$(airs_verdict.block_message)"
 
-      # SYNTHESIZED: metrics.* is a string field in the schema; that it accepts
-      # an expression template is inferred from response.block, not stated for
-      # metrics. This is the channel that keeps the category and the detection
-      # names out of the client response and in the gateway's own telemetry.
+      # metrics.* templates are evaluated (LAB-VERIFIED 2026-09-14). This is
+      # the channel that keeps the category and the detection names out of
+      # the client response and in the gateway's own telemetry.
       metrics:
-        # block_reason carries the generic message with scan_id, for
-        # correlation with the Prisma AIRS scan log; block_detail carries
-        # the category and the detection names.
+        # block_reason is a string: the generic message with scan_id, for
+        # correlation with the Prisma AIRS scan log. block_detail must be a
+        # TABLE: as a string the data plane logs "metric input_block_detail
+        # has unexpected type string, expected table" at every request and
+        # drops it (LAB-VERIFIED 2026-09-14). airs_verdict.detail is
+        # { reason, category, detections }.
         block_reason: "$(airs_verdict.block_message)"
         block_detail: "$(airs_verdict.detail)"
 
@@ -193,36 +228,38 @@ ai_gateway_policies:
 
         # Maps the AIRS ScanResponse to Kong's block decision. The client only
         # ever sees "Blocked by Prisma AIRS" plus the scan_id; the category and
-        # the detection names go to `detail`, wired to metrics.block_detail
-        # above. Naming the detection to the caller is an evasion oracle, and
-        # Palo Alto's own reference integration returns a generic body.
+        # the detection names go to `detail`, a table { reason, category,
+        # detections } wired to metrics.block_detail above (a table because
+        # the data plane drops a string there, LAB-VERIFIED 2026-09-14).
+        # Naming the detection to the caller is an evasion oracle, and Palo
+        # Alto's own reference integration returns a generic body.
         airs_verdict: |
           return function(resp)
             -- $(resp) is a table in BOTH phases on Kong AI Gateway 2.0.3, so this
-            -- branch is inactive today. Kept rather than deleted: require and
-            -- cjson.safe.decode were verified to work inside a guardrail function,
-            -- so it is real cover if a Kong release ever passes a string — and
-            -- without it such a release would fail every request closed.
+            -- branch is inactive today. Kept: require and cjson.safe.decode work in a
+            -- guardrail function, so it is real cover if a release ever passes a
+            -- string — without it such a release would fail every request closed.
             if type(resp) == "string" then
               local ok, decoded = pcall(function()
                 return require("cjson.safe").decode(resp)
               end)
               resp = ok and decoded or nil
             end
-            -- Fail closed: without a verdict, no decision can be trusted.
+            -- Fail closed: without a verdict, no decision can be trusted. detail is
+            -- always a table: metrics.block_detail drops a string (LAB-VERIFIED).
             if type(resp) ~= "table" or type(resp.action) ~= "string" then
-              return { block = true, block_message = "Blocked by Prisma AIRS",
-                       detail = "verdict unavailable (fail-closed)" }
+              return { block = true, block_message = "Blocked by Prisma AIRS", detail = {
+                reason = "verdict unavailable (fail-closed)", category = "unavailable", detections = {} } }
             end
             local msg = "Blocked by Prisma AIRS"
             if resp.scan_id then msg = msg .. " [scan_id=" .. tostring(resp.scan_id) .. "]" end
             -- AIRS reports its own degradation through category, with action=allow.
             if resp.category == "error" or resp.category == "timeout" then
-              return { block = true, block_message = msg,
-                       detail = "scan " .. resp.category .. " (fail-closed)" }
+              return { block = true, block_message = msg, detail = {
+                reason = "scan " .. resp.category .. " (fail-closed)", category = resp.category, detections = {} } }
             end
             if resp.action == "allow" then
-              return { block = false, block_message = "", detail = "" }
+              return { block = false, block_message = "", detail = { reason = "", category = "", detections = {} } }
             end
             -- Category and detection names go to detail, never to the client.
             local hits = {}
@@ -234,18 +271,19 @@ ai_gateway_policies:
               end
             end
             table.sort(hits)
-            local detail = resp.action == "block" and tostring(resp.category or "unknown")
-              or ("unexpected action " .. resp.action)
-            if #hits > 0 then detail = detail .. ": " .. table.concat(hits, ", ") end
-            return { block = true, block_message = msg, detail = detail }
+            local category = tostring(resp.category or "unknown")
+            local reason = resp.action == "block" and category or ("unexpected action " .. resp.action)
+            if #hits > 0 then reason = reason .. ": " .. table.concat(hits, ", ") end
+            return { block = true, block_message = msg, detail = { reason = reason, category = category, detections = hits } }
           end
 
   # ---------------------------------------------------------------------------
   # airs-prompt-scan: prompt only
-  # Same config as airs-scan with guarding_mode INPUT, for models that serve
-  # streaming responses: with stream: true the OUTPUT phase is skipped silently
-  # (LAB-VERIFIED 2026-09-08), so airs-scan would give no response coverage
-  # there anyway. The model output is not scanned.
+  # Same config as airs-scan with guarding_mode INPUT, for models that must
+  # stream. On a stream airs-scan would scan the output per segment, with the
+  # flagged segment already delivered and one AIRS round trip per segment
+  # (LAB-VERIFIED 2026-09-14); this variant makes the trade-off explicit
+  # instead: the prompt is scanned, the model output is not.
   # ---------------------------------------------------------------------------
   - ref: airs-prompt-scan
     ai_gateway: !lookup { id: !env AI_GATEWAY_ID }
@@ -261,9 +299,14 @@ ai_gateway_policies:
       ssl_verify: true
       stop_on_error: true
 
-      # Not used with guarding_mode INPUT (response guard only). Kept so the
-      # two config blocks differ by guarding_mode alone.
-      response_buffer_size: 65536
+      # Same 2.0.1+ fields as in airs-scan, absent from the published schema;
+      # read the note there before uncommenting any of them.
+      # rejection_mode: verbose
+      # continue_on_detection: true
+      # log_blocked_content: false
+
+      # response_buffer_size is not set here either (schema default, and
+      # unused with guarding_mode INPUT: response guard only).
 
       params:
         profile: "kong-airs-prod"
@@ -293,9 +336,8 @@ ai_gateway_policies:
         block_message: "$(airs_verdict.block_message)"
 
       metrics:
-        # block_reason carries the generic message with scan_id, for
-        # correlation with the Prisma AIRS scan log; block_detail carries
-        # the category and the detection names.
+        # As in airs-scan: block_reason a string, block_detail a table
+        # (LAB-VERIFIED 2026-09-14, a string there is dropped with a warning).
         block_reason: "$(airs_verdict.block_message)"
         block_detail: "$(airs_verdict.detail)"
 
@@ -325,30 +367,30 @@ ai_gateway_policies:
         airs_verdict: |
           return function(resp)
             -- $(resp) is a table in BOTH phases on Kong AI Gateway 2.0.3, so this
-            -- branch is inactive today. Kept rather than deleted: require and
-            -- cjson.safe.decode were verified to work inside a guardrail function,
-            -- so it is real cover if a Kong release ever passes a string — and
-            -- without it such a release would fail every request closed.
+            -- branch is inactive today. Kept: require and cjson.safe.decode work in a
+            -- guardrail function, so it is real cover if a release ever passes a
+            -- string — without it such a release would fail every request closed.
             if type(resp) == "string" then
               local ok, decoded = pcall(function()
                 return require("cjson.safe").decode(resp)
               end)
               resp = ok and decoded or nil
             end
-            -- Fail closed: without a verdict, no decision can be trusted.
+            -- Fail closed: without a verdict, no decision can be trusted. detail is
+            -- always a table: metrics.block_detail drops a string (LAB-VERIFIED).
             if type(resp) ~= "table" or type(resp.action) ~= "string" then
-              return { block = true, block_message = "Blocked by Prisma AIRS",
-                       detail = "verdict unavailable (fail-closed)" }
+              return { block = true, block_message = "Blocked by Prisma AIRS", detail = {
+                reason = "verdict unavailable (fail-closed)", category = "unavailable", detections = {} } }
             end
             local msg = "Blocked by Prisma AIRS"
             if resp.scan_id then msg = msg .. " [scan_id=" .. tostring(resp.scan_id) .. "]" end
             -- AIRS reports its own degradation through category, with action=allow.
             if resp.category == "error" or resp.category == "timeout" then
-              return { block = true, block_message = msg,
-                       detail = "scan " .. resp.category .. " (fail-closed)" }
+              return { block = true, block_message = msg, detail = {
+                reason = "scan " .. resp.category .. " (fail-closed)", category = resp.category, detections = {} } }
             end
             if resp.action == "allow" then
-              return { block = false, block_message = "", detail = "" }
+              return { block = false, block_message = "", detail = { reason = "", category = "", detections = {} } }
             end
             -- Category and detection names go to detail, never to the client.
             local hits = {}
@@ -360,10 +402,10 @@ ai_gateway_policies:
               end
             end
             table.sort(hits)
-            local detail = resp.action == "block" and tostring(resp.category or "unknown")
-              or ("unexpected action " .. resp.action)
-            if #hits > 0 then detail = detail .. ": " .. table.concat(hits, ", ") end
-            return { block = true, block_message = msg, detail = detail }
+            local category = tostring(resp.category or "unknown")
+            local reason = resp.action == "block" and category or ("unexpected action " .. resp.action)
+            if #hits > 0 then reason = reason .. ": " .. table.concat(hits, ", ") end
+            return { block = true, block_message = msg, detail = { reason = reason, category = category, detections = hits } }
           end
 
 # =============================================================================
@@ -379,8 +421,17 @@ ai_gateway_policies:
 #     type: model
 #     formats:
 #       - type: openai
+#     config:
+#       # Refuse stream: true at the model, so airs-scan always sees the whole
+#       # response in one scan and nothing reaches the client before the
+#       # verdict. DOCUMENTED https://developer.konghq.com/ai-gateway/streaming/
+#       # (allow | deny | always). LAB-VERIFIED 2026-09-14: a stream: true
+#       # request gets HTTP 400 {"error":{"message":"response streaming is not
+#       # enabled for this LLM"}} before any guardrail call. Drop this line and
+#       # reference airs-prompt-scan instead for a model that must stream.
+#       response_streaming: deny
 #     policies:
-#       - !ref airs-scan            # prompt and response, buffered output
+#       - !ref airs-scan            # prompt and response
 #       # - !ref airs-prompt-scan   # prompt only, for streaming models
 #     targets:
 #       - name: gpt-4o

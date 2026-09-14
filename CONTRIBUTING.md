@@ -44,7 +44,7 @@ two files or between the copies inside one file; `scripts/check-plugin-schema.py
 `check-plugin-schema.py` needs PyYAML: `python3 -m pip install --user -r requirements-dev.txt`.
 
 ```bash
-./scripts/run-lua-tests.sh                        # 63 assertions, no gateway needed
+./scripts/run-lua-tests.sh                        # offline verdict suite, no gateway needed
 python3 scripts/check-plugin-schema.py --parity   # kongctl/deck config blocks match
 python3 scripts/check-plugin-schema.py --schema   # every key/enum exists in the live schema
 shellcheck scripts/*.sh
@@ -66,7 +66,9 @@ Then check:
   decode, attempted when `$(resp)` arrives as a string, which must fail closed.
   Only `action == "allow"` lets a request through; any other action, a missing
   or malformed verdict, or a degraded scan category (`error` / `timeout`) blocks.
-  `airs_verdict` returns `{ block, block_message, detail }`: `block_message` is
+  `airs_verdict` returns `{ block, block_message, detail }`, with `detail` a
+  table `{ reason, category, detections }` because `metrics.block_detail`
+  rejects a string: `block_message` is
   always the fixed, generic client-facing text, never the category or a
   detection name; those go in `detail`, which callers wire to
   `metrics.block_reason` / `metrics.block_detail`, never to `response.block_message`.
