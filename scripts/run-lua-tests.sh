@@ -10,9 +10,15 @@
 # not drift from each other, then runs scripts/test-verdict-functions.lua with
 # these globals injected:
 #
-#   scan_verdict    airs_verdict  from airs-scan        (copy 1)
-#   prompt_verdict  airs_verdict  from airs-prompt-scan (copy 2)
-#   airs_contents   airs_contents from airs-scan        (copy 1)
+#   scan_verdict      airs_verdict     from airs-scan        (copy 1)
+#   prompt_verdict    airs_verdict     from airs-prompt-scan (copy 2)
+#   airs_contents     airs_contents    from airs-scan        (copy 1)
+#   airs_correlation  airs_correlation from airs-scan        (copy 1)
+#   airs_metadata     airs_metadata    from airs-scan        (copy 1)
+#
+# airs_correlation, airs_metadata and the structured path of airs_contents
+# call the Kong PDK, so the suite stubs `kong` and `ngx` itself; see the header
+# of scripts/test-verdict-functions.lua.
 #
 # Needs luajit, or lua, or Docker. Kong runs LuaJIT, so luajit is preferred.
 # No network access and no gateway required.
@@ -66,7 +72,7 @@ extract_block() {
          { while (blanks-- > 0) print ""; blanks = 0; print }'
 }
 
-for key in airs_verdict airs_contents; do
+for key in airs_verdict airs_contents airs_correlation airs_metadata; do
   kongctl_count="$(count_blocks "$KONGCTL_YAML" "$key")"
   deck_count="$(count_blocks "$DECK_YAML" "$key")"
 
@@ -115,6 +121,12 @@ done
   echo "end)()"
   echo "airs_contents = (function()"
   cat "$WORK/kongctl.airs_contents.1.lua"
+  echo "end)()"
+  echo "airs_correlation = (function()"
+  cat "$WORK/kongctl.airs_correlation.1.lua"
+  echo "end)()"
+  echo "airs_metadata = (function()"
+  cat "$WORK/kongctl.airs_metadata.1.lua"
   echo "end)()"
   cat "$TESTS"
 } > "$WORK/suite.lua"

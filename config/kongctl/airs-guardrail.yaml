@@ -79,6 +79,113 @@
 #   LAB-VERIFIED : response_buffer_size is left at its schema default (100).
 #                 The 65536 this repository shipped until 2026-09-14 turned a
 #                 streamed response into silence (see the streaming entry).
+#   LAB-VERIFIED : correlation identifiers, 2026-09-14. They nest:
+#                 transaction_id (and tr_id, its older name) is one ROUND, a
+#                 prompt and the response it produced; session_id is the
+#                 CONVERSATION grouping several rounds. The round carries the
+#                 SAME value in the INPUT and the OUTPUT scan of one
+#                 non-streamed exchange, because airs_correlation stashes it
+#                 in kong.ctx.shared, which survives between the two phases.
+#                 Measured on the echo server: two rounds under one
+#                 x-airs-session-id came out as two distinct round identifiers
+#                 sharing one session identifier, and a caller naming its own
+#                 round with x-airs-transaction-id overrode the Kong request id
+#                 in both phases. Accepted by the live Prisma AIRS tenant
+#                 (test-airs.sh 5/5), and confirmed in the Strata Cloud
+#                 Manager AI Sessions view: two rounds sent through Kong under
+#                 one session header render as ONE session containing TWO
+#                 transactions of two scans each, the transaction ids being the
+#                 Kong request ids.
+#   LAB-VERIFIED : tr_id is the older name of session_id, NOT of
+#                 transaction_id, so it is not sent. Six probes straight
+#                 against a live tenant's /v1/scan/sync/request: tr_id alone
+#                 comes back with session_id set to that value and a generated
+#                 transaction_id; transaction_id alone comes back with a
+#                 generated session_id; with tr_id and session_id both
+#                 supplied, session_id wins. Sending the round under tr_id
+#                 would put the round identifier in the session slot.
+#   LAB-VERIFIED : the Kong PDK is reachable inside a guardrail function body
+#                 (kong and ngx are tables, require works), which is how
+#                 airs_correlation gets a per-request value. This contradicts
+#                 an earlier reading of this repository's own notes: the
+#                 plugin's refusal of unknown ARGUMENT names says nothing
+#                 about the sandbox's globals.
+#   LAB-VERIFIED : every PDK call must be wrapped in pcall. On a STREAMED
+#                 response the OUTPUT phase runs with no request context, and
+#                 an unguarded raise there does not fail the request — it
+#                 silently skips the guardrail call for that segment. Measured
+#                 on one streamed request, same policy: a function returning a
+#                 constant gave 7 OUTPUT segment scans, the same function
+#                 calling kong.request.get_header unguarded gave ZERO with
+#                 HTTP 200 and the stream delivered whole, and the pcall
+#                 version gave 7 again. An unguarded PDK call is therefore a
+#                 fail-OPEN on streams.
+#   LAB-VERIFIED : a function field that is nil is omitted from the scan
+#                 payload; a field that is an EMPTY STRING is rendered as JSON
+#                 false. airs_correlation returns nil, never "", for an
+#                 identifier it cannot build.
+#   LAB-VERIFIED : Prisma AIRS judges only the LAST element of contents[],
+#                 2026-09-14. The earlier elements are context and are not
+#                 scanned: an injection sent first of two, or first of three,
+#                 comes back allow/benign; the same injection last, or alone,
+#                 blocks; and inside one element together with benign text --
+#                 the shape that has always shipped -- it blocks. airs_contents
+#                 therefore returns ONE element. An intermediate version
+#                 written the same day split the conversation into one element
+#                 per message, which matches a natural reading of the schema
+#                 and would have stopped scanning every turn but the newest.
+#   LAB-VERIFIED : the scanned text is role-attributed, 2026-09-14, and this
+#                 is a FALSE POSITIVE FIX, not a cosmetic one. text_source
+#                 joins message content with no indication of who said what.
+#                 An ordinary two-turn chat -- "And Italy? / The capital of
+#                 France is Paris. / What is the capital of France?" -- was
+#                 blocked as agent + injection, three times out of three on a
+#                 live tenant: the assistant's own answer, unattributed, reads
+#                 as an assertion planted in the prompt. The report's pi
+#                 snippet showed exactly that text. The same turns prefixed
+#                 "user:" and "assistant:" come back benign, in either order,
+#                 and a real injection still blocks whether it is the newest
+#                 turn or an earlier one. Replayed through the gateway after
+#                 the change: the blocked conversation passes 3/3, the same
+#                 conversation ending in an injection blocks 3/3, and
+#                 test-airs.sh stays 5/5.
+#                 The system message is deliberately NOT labelled: writing
+#                 "system:" into the scanned text is the shape of a
+#                 system-prompt spoof and gets the whole conversation blocked
+#                 as agent + injection, while the same content unlabelled is
+#                 benign. Tool results and unknown roles go in unlabelled for
+#                 the same reason.
+#   LAB-VERIFIED : tool scanning, 2026-09-14. Tool definitions and the
+#                 arguments a model generates are absent from $(content) under
+#                 every text_source, so a tool call is scanned only on its way
+#                 back in, as the text of its result. With params.tool_scan set
+#                 to "calls" the scanned text is rebuilt from the request body
+#                 with those arguments appended. Measured with guarding_mode
+#                 INPUT so only the prompt leg could act: a conversation whose
+#                 injection sat solely inside a tool call's arguments was
+#                 allowed 5/5 with the setting off and blocked 5/5 with it on,
+#                 and test-airs.sh passes 5/5 either way.
+#                 contents[].tool_event is the richer alternative and a live
+#                 tenant does flag it (injection on input_detected, threats
+#                 "context poisoning"), with ecosystem forced to "mcp" and
+#                 method to tools/call or tools/list -- anything else is HTTP
+#                 400. It is not used here because it is judged only as the
+#                 last element, so it would displace the prompt from the scan.
+#   LAB-VERIFIED : enriched metadata, 2026-09-14. metadata.ai_model,
+#                 metadata.user_ip and metadata.app_user are reachable from a
+#                 guardrail function and are populated on a normal request.
+#                 user_ip is what Kong considers the client address: it is the
+#                 X-Forwarded-For value only when the peer is in the data
+#                 plane's trusted_ips, and the direct peer address otherwise --
+#                 behind a load balancer, set trusted_ips or the record shows
+#                 the balancer.
+#   LAB-VERIFIED : both degrade, they never break. On a STREAMED response the
+#                 OUTPUT segments have no request context: the payload is the
+#                 text Kong selected and metadata is app_name alone, and the
+#                 segments are STILL SCANNED -- seven segment calls on a
+#                 700-character stream, the same count as before this change.
+#                 That is what the pcall around every PDK call buys; without it
+#                 the scan is skipped silently.
 #   NOT PRESENT : retry and cache options. The plugin schema has neither.
 #
 # Replace params.profile with your Prisma AIRS security profile name, and
@@ -164,6 +271,33 @@ ai_gateway_policies:
       params:
         profile: "kong-airs-prod"
         app_name: "kong-ai-gateway"
+        # Request headers the caller may use to name its own correlation
+        # identifiers. session_header names the CONVERSATION, which only the
+        # caller can know: absent, the conversation is the single exchange.
+        # transaction_header names the ROUND, and is optional too - absent,
+        # the round is Kong's own request id, which is already correct. Point
+        # both at whatever headers your application already sends.
+        transaction_header: "x-airs-transaction-id"
+        session_header: "x-airs-session-id"
+        # Metadata enrichment. user_header names a request header carrying the
+        # end user, used only when no Kong consumer is authenticated; it is
+        # caller-controlled, so it labels a scan and never authenticates one.
+        # context_messages caps how many conversation messages are sent as scan
+        # context; leave it out to send the whole conversation, as the flat
+        # payload always did.
+        user_header: "x-airs-user"
+        # context_messages: "20"
+        # tool_scan turns function-call scanning on. Absent or any other value:
+        # off, and the scanned text is exactly what text_source produced, which
+        # is what shipped before 2026-09-14. "calls" rebuilds that text from the
+        # request body and appends the arguments the model generated for each
+        # tool call -- which no text_source ever exposed, so a tool call was
+        # scanned only on its way back in. "catalogue" prepends the tools[]
+        # declaration too: that is the tool-poisoning surface, and also the one
+        # a profile with the source_code detector flags, because a JSON
+        # parameter schema reads as code (LAB-VERIFIED 2026-09-14). Try it
+        # against your profile before enabling it.
+        # tool_scan: "calls"
 
       request:
         url: https://service.api.aisecurity.paloaltonetworks.com/v1/scan/sync/request
@@ -183,6 +317,18 @@ ai_gateway_policies:
         # functions that return a Lua table, as in Kong's Azure Content Safety
         # example. A nested YAML map here fails schema validation.
         body:
+          # Correlation identifiers, built by airs_correlation below. They nest:
+          # transaction_id is one ROUND, a prompt and the response it produced,
+          # and carries the same value in the INPUT and the OUTPUT scan so Strata
+          # Cloud Manager shows the two verdicts as one exchange; session_id is
+          # the CONVERSATION grouping several rounds, taken from the caller's
+          # header and falling back to the round so an exchange is never split
+          # across two sessions. tr_id is deliberately absent: on a live tenant
+          # it is the older name of session_id, not of transaction_id. A field
+          # the function leaves nil is omitted from the payload; an empty string
+          # would be sent as JSON false.
+          transaction_id: "$(airs_correlation.transaction_id)"
+          session_id: "$(airs_correlation.session_id)"
           ai_profile: "$(airs_profile)"
           metadata: "$(airs_metadata)"
           contents: "$(airs_contents)"
@@ -205,6 +351,50 @@ ai_gateway_policies:
         block_detail: "$(airs_verdict.detail)"
 
       functions:
+        airs_correlation: |
+          return function(conf)
+            -- Correlation identifiers for the Prisma AIRS scan log. They nest, and the
+            -- two are not interchangeable: transaction_id is ONE ROUND, a prompt and the
+            -- response it produced, while session_id is the CONVERSATION that groups
+            -- several rounds.
+            -- A round is Kong's own request id, so the INPUT and the OUTPUT scan of one
+            -- exchange share it. A conversation can only come from the caller; when no
+            -- session header is sent, session_id falls back to the round, so the two
+            -- scans of one exchange still land in one session instead of two.
+            -- tr_id is deliberately NOT sent. On a live tenant it is the older name of
+            -- session_id, not of transaction_id: sending tr_id alone sets session_id to
+            -- that value, and when both are sent session_id wins (LAB-VERIFIED
+            -- 2026-09-14, six probes straight against /v1/scan/sync/request).
+            -- Every PDK call below is wrapped in pcall on purpose. On a STREAMED
+            -- response the OUTPUT phase runs with no request context, and an unguarded
+            -- raise there does not fail the request: it silently skips the scan
+            -- (LAB-VERIFIED 2026-09-14). Returning an empty table is the safe outcome --
+            -- a nil field is omitted from the scan payload, while an empty string is
+            -- rendered as JSON false, which is not a valid identifier.
+            local ok, shared = pcall(function() return kong.ctx.shared end)
+            if not ok or type(shared) ~= "table" then return {} end
+            if type(shared.airs_correlation) == "table" then return shared.airs_correlation end
+            local function header(name)
+              if type(name) ~= "string" or name == "" then return nil end
+              local got, value = pcall(function() return kong.request.get_header(name) end)
+              if got and type(value) == "string" and #value > 0 and #value <= 256 then return value end
+              return nil
+            end
+            local params = conf.params or {}
+            local round = header(params.transaction_header)
+            if round == nil then
+              local got, request_id = pcall(function() return ngx.var.request_id end)
+              if got and type(request_id) == "string" and #request_id > 0 then round = request_id end
+            end
+            if round == nil then return {} end
+            local correlation = {
+              transaction_id = round,
+              session_id = header(params.session_header) or round,
+            }
+            shared.airs_correlation = correlation
+            return correlation
+          end
+
         airs_profile: |
           return function(conf)
             return { profile_name = conf.params.profile }
@@ -212,7 +402,37 @@ ai_gateway_policies:
 
         airs_metadata: |
           return function(conf)
-            return { app_name = conf.params.app_name }
+            local params = (conf and conf.params) or {}
+            -- Every lookup is pcall-guarded and may yield nothing: on a streamed OUTPUT
+            -- segment there is no request context at all, and an unguarded raise there
+            -- silently skips the scan rather than failing the request (LAB-VERIFIED
+            -- 2026-09-14). A field that cannot be built is left nil, which the plugin
+            -- omits from the payload; an empty string would be sent as JSON false.
+            local function first(...)
+              for _, get in ipairs({ ... }) do
+                local ok, value = pcall(get)
+                if ok and type(value) == "string" and #value > 0 and #value <= 256 then
+                  return value
+                end
+              end
+              return nil
+            end
+            return {
+              app_name = params.app_name,
+              ai_model = first(function() return ngx.ctx.ai_model.name end,
+                               function() return kong.request.get_body().model end),
+              user_ip = first(function() return kong.client.get_forwarded_ip() end,
+                              function() return kong.client.get_ip() end),
+              -- The authenticated consumer first: it is the identity Kong established.
+              -- The header is the fallback for a gateway fronting an application that
+              -- knows its end user, and it is caller-controlled -- fine for a scan-log
+              -- label, never to be treated as an authenticated identity.
+              app_user = first(function()
+                                 local consumer = kong.client.get_consumer()
+                                 return consumer and (consumer.username or consumer.id) or nil
+                               end,
+                               function() return kong.request.get_header(params.user_header) end),
+            }
           end
 
         # Builds contents[] from the phase. The reference is bare: the plugin
@@ -231,13 +451,97 @@ ai_gateway_policies:
         # that errors returns HTTP 500 and the request never reaches the
         # model. LAB-VERIFIED 2026-09-08.
         airs_contents: |
-          return function(source, content)
+          return function(source, content, conf)
+            -- The type guard comes first and has no fallback. Built-ins are injected by
+            -- parameter name, so a Kong change to that mapping, or a typo in a name,
+            -- would hand this function something other than the scanned text; a
+            -- permissive fallback would then JSON-encode whatever arrived and ship it to
+            -- Prisma AIRS. Raising refuses the request with HTTP 500 before the model is
+            -- called (LAB-VERIFIED 2026-09-08).
             if type(content) ~= "string" then
               error("airs_contents: content is not a string; refusing to build the scan payload")
             end
-            if source == "INPUT" then return { { prompt = content } } end
+            -- ONE element, always. Prisma AIRS judges the LAST element of contents[] and
+            -- treats the earlier ones as context only: an injection placed in any but
+            -- the last element comes back allow/benign (LAB-VERIFIED 2026-09-14). So
+            -- everything that must be scanned has to be inside the element sent last.
             if source == "OUTPUT" then return { { response = content } } end
-            error("airs_contents: unknown phase " .. tostring(source))
+            if source ~= "INPUT" then
+              error("airs_contents: unknown phase " .. tostring(source))
+            end
+            local flat = { { prompt = content } }
+            -- Rebuild the scanned text from the request body, with each turn attributed.
+            -- text_source joins message CONTENT only, with no indication of who said
+            -- what, and that alone produces false positives on ordinary conversation:
+            -- "And Italy? / The capital of France is Paris. / What is the capital of
+            -- France?" was blocked as agent + injection, three times out of three, on a
+            -- live tenant -- the assistant's own answer, unattributed, reads as an
+            -- assertion planted in the prompt. The same turns prefixed "user:" and
+            -- "assistant:" come back benign, in either order, while a real injection
+            -- still blocks whether it is the newest turn or an earlier one
+            -- (LAB-VERIFIED 2026-09-14).
+            local ok, body = pcall(function() return kong.request.get_body() end)
+            if not ok or type(body) ~= "table" or type(body.messages) ~= "table" then
+              return flat
+            end
+            local params = (conf and conf.params) or {}
+            local mode = params.tool_scan
+            local want_tools = (mode == "calls" or mode == "catalogue")
+            local loaded, cjson = pcall(require, "cjson.safe")
+            local encode = (loaded and type(cjson) == "table") and cjson.encode or nil
+            local parts, count = {}, 0
+            local function push(text)
+              if type(text) == "string" and text ~= "" then
+                count = count + 1
+                parts[count] = text
+              end
+            end
+            -- The tool catalogue is the tool-poisoning surface. It is also the most
+            -- likely to be flagged as source code, since a JSON parameter schema reads
+            -- as code to a profile with that detector on, which is why it is its own
+            -- opt-in rather than part of "calls".
+            if mode == "catalogue" and encode and type(body.tools) == "table" then
+              push(encode(body.tools))
+            end
+            for _, message in ipairs(body.messages) do
+              if type(message) ~= "table" then return flat end
+              local role, text = message.role, message.content
+              if type(text) == "string" and text ~= "" then
+                -- Only user and assistant turns are labelled. A "system:" prefix is
+                -- exactly the shape of a system-prompt spoof, and writing it ourselves
+                -- gets the whole conversation blocked as agent + injection (LAB-VERIFIED
+                -- 2026-09-14) -- so the system prompt, tool results and any unknown role
+                -- go in unlabelled, which is what they were before this change.
+                if role == "user" or role == "assistant" then
+                  push(role .. ": " .. text)
+                else
+                  push(text)
+                end
+              end
+              if want_tools and type(message.tool_calls) == "table" then
+                for _, call in ipairs(message.tool_calls) do
+                  local fn = (type(call) == "table" and type(call["function"]) == "table")
+                    and call["function"] or nil
+                  if fn then
+                    local arguments = fn.arguments
+                    if type(arguments) ~= "string" and encode then
+                      arguments = encode(arguments)
+                    end
+                    if type(arguments) == "string" then
+                      push((type(fn.name) == "string" and fn.name or "tool") .. " " .. arguments)
+                    end
+                  end
+                end
+              end
+            end
+            if count == 0 then return flat end
+            local cap = tonumber(params.context_messages or "")
+            if cap and cap >= 1 and count > cap then
+              local trimmed = {}
+              for i = count - cap + 1, count do trimmed[#trimmed + 1] = parts[i] end
+              parts = trimmed
+            end
+            return { { prompt = table.concat(parts, "\n\n") } }
           end
 
         # Maps the AIRS ScanResponse to Kong's block decision. The client only
@@ -325,6 +629,33 @@ ai_gateway_policies:
       params:
         profile: "kong-airs-prod"
         app_name: "kong-ai-gateway"
+        # Request headers the caller may use to name its own correlation
+        # identifiers. session_header names the CONVERSATION, which only the
+        # caller can know: absent, the conversation is the single exchange.
+        # transaction_header names the ROUND, and is optional too - absent,
+        # the round is Kong's own request id, which is already correct. Point
+        # both at whatever headers your application already sends.
+        transaction_header: "x-airs-transaction-id"
+        session_header: "x-airs-session-id"
+        # Metadata enrichment. user_header names a request header carrying the
+        # end user, used only when no Kong consumer is authenticated; it is
+        # caller-controlled, so it labels a scan and never authenticates one.
+        # context_messages caps how many conversation messages are sent as scan
+        # context; leave it out to send the whole conversation, as the flat
+        # payload always did.
+        user_header: "x-airs-user"
+        # context_messages: "20"
+        # tool_scan turns function-call scanning on. Absent or any other value:
+        # off, and the scanned text is exactly what text_source produced, which
+        # is what shipped before 2026-09-14. "calls" rebuilds that text from the
+        # request body and appends the arguments the model generated for each
+        # tool call -- which no text_source ever exposed, so a tool call was
+        # scanned only on its way back in. "catalogue" prepends the tools[]
+        # declaration too: that is the tool-poisoning surface, and also the one
+        # a profile with the source_code detector flags, because a JSON
+        # parameter schema reads as code (LAB-VERIFIED 2026-09-14). Try it
+        # against your profile before enabling it.
+        # tool_scan: "calls"
 
       request:
         url: https://service.api.aisecurity.paloaltonetworks.com/v1/scan/sync/request
@@ -341,6 +672,18 @@ ai_gateway_policies:
           Content-Type: "application/json"
           Accept: "application/json"
         body:
+          # Correlation identifiers, built by airs_correlation below. They nest:
+          # transaction_id is one ROUND, a prompt and the response it produced,
+          # and carries the same value in the INPUT and the OUTPUT scan so Strata
+          # Cloud Manager shows the two verdicts as one exchange; session_id is
+          # the CONVERSATION grouping several rounds, taken from the caller's
+          # header and falling back to the round so an exchange is never split
+          # across two sessions. tr_id is deliberately absent: on a live tenant
+          # it is the older name of session_id, not of transaction_id. A field
+          # the function leaves nil is omitted from the payload; an empty string
+          # would be sent as JSON false.
+          transaction_id: "$(airs_correlation.transaction_id)"
+          session_id: "$(airs_correlation.session_id)"
           ai_profile: "$(airs_profile)"
           metadata: "$(airs_metadata)"
           contents: "$(airs_contents)"
@@ -358,6 +701,50 @@ ai_gateway_policies:
       # Byte-identical to the functions of airs-scan. scripts/run-lua-tests.sh
       # fails the build if any copy drifts.
       functions:
+        airs_correlation: |
+          return function(conf)
+            -- Correlation identifiers for the Prisma AIRS scan log. They nest, and the
+            -- two are not interchangeable: transaction_id is ONE ROUND, a prompt and the
+            -- response it produced, while session_id is the CONVERSATION that groups
+            -- several rounds.
+            -- A round is Kong's own request id, so the INPUT and the OUTPUT scan of one
+            -- exchange share it. A conversation can only come from the caller; when no
+            -- session header is sent, session_id falls back to the round, so the two
+            -- scans of one exchange still land in one session instead of two.
+            -- tr_id is deliberately NOT sent. On a live tenant it is the older name of
+            -- session_id, not of transaction_id: sending tr_id alone sets session_id to
+            -- that value, and when both are sent session_id wins (LAB-VERIFIED
+            -- 2026-09-14, six probes straight against /v1/scan/sync/request).
+            -- Every PDK call below is wrapped in pcall on purpose. On a STREAMED
+            -- response the OUTPUT phase runs with no request context, and an unguarded
+            -- raise there does not fail the request: it silently skips the scan
+            -- (LAB-VERIFIED 2026-09-14). Returning an empty table is the safe outcome --
+            -- a nil field is omitted from the scan payload, while an empty string is
+            -- rendered as JSON false, which is not a valid identifier.
+            local ok, shared = pcall(function() return kong.ctx.shared end)
+            if not ok or type(shared) ~= "table" then return {} end
+            if type(shared.airs_correlation) == "table" then return shared.airs_correlation end
+            local function header(name)
+              if type(name) ~= "string" or name == "" then return nil end
+              local got, value = pcall(function() return kong.request.get_header(name) end)
+              if got and type(value) == "string" and #value > 0 and #value <= 256 then return value end
+              return nil
+            end
+            local params = conf.params or {}
+            local round = header(params.transaction_header)
+            if round == nil then
+              local got, request_id = pcall(function() return ngx.var.request_id end)
+              if got and type(request_id) == "string" and #request_id > 0 then round = request_id end
+            end
+            if round == nil then return {} end
+            local correlation = {
+              transaction_id = round,
+              session_id = header(params.session_header) or round,
+            }
+            shared.airs_correlation = correlation
+            return correlation
+          end
+
         airs_profile: |
           return function(conf)
             return { profile_name = conf.params.profile }
@@ -365,17 +752,131 @@ ai_gateway_policies:
 
         airs_metadata: |
           return function(conf)
-            return { app_name = conf.params.app_name }
+            local params = (conf and conf.params) or {}
+            -- Every lookup is pcall-guarded and may yield nothing: on a streamed OUTPUT
+            -- segment there is no request context at all, and an unguarded raise there
+            -- silently skips the scan rather than failing the request (LAB-VERIFIED
+            -- 2026-09-14). A field that cannot be built is left nil, which the plugin
+            -- omits from the payload; an empty string would be sent as JSON false.
+            local function first(...)
+              for _, get in ipairs({ ... }) do
+                local ok, value = pcall(get)
+                if ok and type(value) == "string" and #value > 0 and #value <= 256 then
+                  return value
+                end
+              end
+              return nil
+            end
+            return {
+              app_name = params.app_name,
+              ai_model = first(function() return ngx.ctx.ai_model.name end,
+                               function() return kong.request.get_body().model end),
+              user_ip = first(function() return kong.client.get_forwarded_ip() end,
+                              function() return kong.client.get_ip() end),
+              -- The authenticated consumer first: it is the identity Kong established.
+              -- The header is the fallback for a gateway fronting an application that
+              -- knows its end user, and it is caller-controlled -- fine for a scan-log
+              -- label, never to be treated as an authenticated identity.
+              app_user = first(function()
+                                 local consumer = kong.client.get_consumer()
+                                 return consumer and (consumer.username or consumer.id) or nil
+                               end,
+                               function() return kong.request.get_header(params.user_header) end),
+            }
           end
 
         airs_contents: |
-          return function(source, content)
+          return function(source, content, conf)
+            -- The type guard comes first and has no fallback. Built-ins are injected by
+            -- parameter name, so a Kong change to that mapping, or a typo in a name,
+            -- would hand this function something other than the scanned text; a
+            -- permissive fallback would then JSON-encode whatever arrived and ship it to
+            -- Prisma AIRS. Raising refuses the request with HTTP 500 before the model is
+            -- called (LAB-VERIFIED 2026-09-08).
             if type(content) ~= "string" then
               error("airs_contents: content is not a string; refusing to build the scan payload")
             end
-            if source == "INPUT" then return { { prompt = content } } end
+            -- ONE element, always. Prisma AIRS judges the LAST element of contents[] and
+            -- treats the earlier ones as context only: an injection placed in any but
+            -- the last element comes back allow/benign (LAB-VERIFIED 2026-09-14). So
+            -- everything that must be scanned has to be inside the element sent last.
             if source == "OUTPUT" then return { { response = content } } end
-            error("airs_contents: unknown phase " .. tostring(source))
+            if source ~= "INPUT" then
+              error("airs_contents: unknown phase " .. tostring(source))
+            end
+            local flat = { { prompt = content } }
+            -- Rebuild the scanned text from the request body, with each turn attributed.
+            -- text_source joins message CONTENT only, with no indication of who said
+            -- what, and that alone produces false positives on ordinary conversation:
+            -- "And Italy? / The capital of France is Paris. / What is the capital of
+            -- France?" was blocked as agent + injection, three times out of three, on a
+            -- live tenant -- the assistant's own answer, unattributed, reads as an
+            -- assertion planted in the prompt. The same turns prefixed "user:" and
+            -- "assistant:" come back benign, in either order, while a real injection
+            -- still blocks whether it is the newest turn or an earlier one
+            -- (LAB-VERIFIED 2026-09-14).
+            local ok, body = pcall(function() return kong.request.get_body() end)
+            if not ok or type(body) ~= "table" or type(body.messages) ~= "table" then
+              return flat
+            end
+            local params = (conf and conf.params) or {}
+            local mode = params.tool_scan
+            local want_tools = (mode == "calls" or mode == "catalogue")
+            local loaded, cjson = pcall(require, "cjson.safe")
+            local encode = (loaded and type(cjson) == "table") and cjson.encode or nil
+            local parts, count = {}, 0
+            local function push(text)
+              if type(text) == "string" and text ~= "" then
+                count = count + 1
+                parts[count] = text
+              end
+            end
+            -- The tool catalogue is the tool-poisoning surface. It is also the most
+            -- likely to be flagged as source code, since a JSON parameter schema reads
+            -- as code to a profile with that detector on, which is why it is its own
+            -- opt-in rather than part of "calls".
+            if mode == "catalogue" and encode and type(body.tools) == "table" then
+              push(encode(body.tools))
+            end
+            for _, message in ipairs(body.messages) do
+              if type(message) ~= "table" then return flat end
+              local role, text = message.role, message.content
+              if type(text) == "string" and text ~= "" then
+                -- Only user and assistant turns are labelled. A "system:" prefix is
+                -- exactly the shape of a system-prompt spoof, and writing it ourselves
+                -- gets the whole conversation blocked as agent + injection (LAB-VERIFIED
+                -- 2026-09-14) -- so the system prompt, tool results and any unknown role
+                -- go in unlabelled, which is what they were before this change.
+                if role == "user" or role == "assistant" then
+                  push(role .. ": " .. text)
+                else
+                  push(text)
+                end
+              end
+              if want_tools and type(message.tool_calls) == "table" then
+                for _, call in ipairs(message.tool_calls) do
+                  local fn = (type(call) == "table" and type(call["function"]) == "table")
+                    and call["function"] or nil
+                  if fn then
+                    local arguments = fn.arguments
+                    if type(arguments) ~= "string" and encode then
+                      arguments = encode(arguments)
+                    end
+                    if type(arguments) == "string" then
+                      push((type(fn.name) == "string" and fn.name or "tool") .. " " .. arguments)
+                    end
+                  end
+                end
+              end
+            end
+            if count == 0 then return flat end
+            local cap = tonumber(params.context_messages or "")
+            if cap and cap >= 1 and count > cap then
+              local trimmed = {}
+              for i = count - cap + 1, count do trimmed[#trimmed + 1] = parts[i] end
+              parts = trimmed
+            end
+            return { { prompt = table.concat(parts, "\n\n") } }
           end
 
         airs_verdict: |

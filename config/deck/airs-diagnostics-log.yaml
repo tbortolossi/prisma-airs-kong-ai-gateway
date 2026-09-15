@@ -1,0 +1,58 @@
+# =============================================================================
+# Optional: one diagnostics log on the node, to send when something misbehaves
+#
+# Shape : classic Gateway control plane, self-managed data planes
+# Tool  : merge this plugin into the state file that carries
+#         config/deck/airs-guardrail.yaml, then deck gateway diff / sync
+# Needs : nothing beyond the data plane. file-log is a core Kong plugin.
+#
+# Same purpose as config/kongctl/airs-diagnostics-log.yaml, as a plugin on the
+# Service that carries airs-scan. Read that file's header for what the record
+# contains, what it deliberately does not contain, and the header-scrubbing
+# caveat. Everything there applies here unchanged.
+#
+# THE SWITCH. `enabled` below is the on/off control: false leaves the plugin
+# declared but inert. Re-run `deck gateway diff` then `deck gateway sync` after
+# changing it.
+#
+# Service scope is deliberate. Attached to the Service rather than to a Route,
+# it covers the streaming route too — the route there carries airs-prompt-scan
+# instead of airs-scan, and a problem report needs both. file-log is not
+# ai-custom-guardrail, so the one-instance-per-scope constraint that governs
+# the guardrail policies does not apply: a service-level file-log and the
+# route-level guardrail coexist.
+#
+# VERIFICATION STATUS
+#   DOCUMENTED   : file-log config is exactly path, reopen and
+#                  custom_fields_by_lua
+#                  https://developer.konghq.com/plugins/file-log/reference/
+#   DOCUMENTED   : custom_fields_by_lua maps a log field to a Lua chunk, and a
+#                  chunk returning nil removes the field from the record
+#                  https://developer.konghq.com/plugins/file-log/
+#   DOCUMENTED   : the guardrail fields carried by the record
+#                  https://developer.konghq.com/ai-gateway/ai-audit-log-reference/
+#   LAB-VERIFIED : see the dated entry added when this file is exercised
+#                  against a live classic control plane. Until that line is
+#                  present, treat it as SYNTHESIZED — the kongctl counterpart
+#                  is the variant that was run.
+# =============================================================================
+
+_format_version: "3.0"
+
+plugins:
+  - name: file-log
+    service: llm-openai
+    # The on/off switch. false leaves the plugin declared but inert.
+    enabled: true
+    config:
+      # The node's standard output, so the record lands in `docker logs` /
+      # `kubectl logs`. For a real file, give a path inside a writable volume.
+      path: /dev/stdout
+      reopen: false
+      # Remove the usual client-credential carriers from the record.
+      custom_fields_by_lua:
+        request.headers.authorization: "return nil"
+        request.headers.x-api-key: "return nil"
+        request.headers.apikey: "return nil"
+        request.headers.cookie: "return nil"
+        response.headers.set-cookie: "return nil"

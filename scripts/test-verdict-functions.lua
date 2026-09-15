@@ -2,13 +2,15 @@
 -- Assertions for the ai-custom-guardrail functions.
 --
 -- This file contains no copy of the Lua under test. scripts/run-lua-tests.sh
--- extracts airs_verdict and airs_contents from config/kongctl/airs-guardrail.yaml
--- and injects them as the globals scan_verdict (airs-scan), prompt_verdict
--- (airs-prompt-scan) and airs_contents (airs-scan), so these assertions can
+-- extracts airs_verdict, airs_contents, airs_correlation and airs_metadata from
+-- config/kongctl/airs-guardrail.yaml and injects them as the globals
+-- scan_verdict (airs-scan), prompt_verdict (airs-prompt-scan), airs_contents,
+-- airs_correlation and airs_metadata (airs-scan), so these assertions can
 -- never drift from the shipped configuration.
 --
--- 71 assertions: 32 verdict cases run against both verdict copies, plus 7 on
--- airs_contents. TAP-style output, non-zero exit on any failure.
+-- 111 assertions: 32 verdict cases run against both verdict copies, 7 on the
+-- airs_contents type guard and 14 on its tool scanning, 15 on airs_correlation,
+-- and 11 on airs_metadata. TAP-style output, non-zero exit on any failure.
 --
 -- `detail` is a TABLE { reason, category, detections } on every path, never a
 -- string: it is wired to metrics.block_detail, and the data plane drops a
@@ -35,6 +37,30 @@ local FIXTURES = {
     action = "allow", category = "timeout",
   },
 }
+-- encode is the other half of the stub: airs_contents serialises the tool
+-- catalogue with it. Keys are emitted in sorted order, which cjson does NOT
+-- guarantee -- so the assertions below check what the encoded catalogue
+-- CONTAINS, never that it equals a particular string.
+local function stub_encode(value)
+  local kind = type(value)
+  if kind == "string" then return '"' .. value:gsub('"', '\\"') .. '"' end
+  if kind == "number" or kind == "boolean" then return tostring(value) end
+  if kind ~= "table" then return "null" end
+  if #value > 0 then
+    local parts = {}
+    for _, item in ipairs(value) do parts[#parts + 1] = stub_encode(item) end
+    return "[" .. table.concat(parts, ",") .. "]"
+  end
+  local keys = {}
+  for k in pairs(value) do keys[#keys + 1] = k end
+  table.sort(keys)
+  local parts = {}
+  for _, k in ipairs(keys) do
+    parts[#parts + 1] = '"' .. k .. '":' .. stub_encode(value[k])
+  end
+  return "{" .. table.concat(parts, ",") .. "}"
+end
+
 package.preload["cjson.safe"] = function()
   return {
     decode = function(s)
@@ -42,6 +68,7 @@ package.preload["cjson.safe"] = function()
       if hit == nil then return nil, "Expected value but found invalid token" end
       return hit
     end,
+    encode = stub_encode,
   }
 end
 
@@ -342,6 +369,475 @@ check_raises("airs_contents: nil content raises",
   airs_contents, "INPUT", nil)
 check_raises("airs_contents: unknown source raises",
   airs_contents, "SIDEWAYS", "hello")
+
+
+-- -----------------------------------------------------------------------------
+-- airs_correlation. Builds the correlation identifiers for the scan payload
+-- from the Kong PDK, which this file stubs. The identifiers nest:
+-- transaction_id is one ROUND -- a prompt and the response it produced -- and
+-- session_id is the CONVERSATION grouping several rounds. tr_id is never sent:
+-- on a live tenant it is the older name of session_id, not of transaction_id,
+-- so sending the round under it would put the round value in the session slot
+-- (LAB-VERIFIED 2026-09-14). Two properties matter more than the values:
+--   * it must NEVER raise, whatever the PDK does. On a streamed response the
+--     OUTPUT phase runs with no request context, and an unguarded raise there
+--     silently skips the scan instead of failing the request (LAB-VERIFIED
+--     2026-09-14) -- a fail-open.
+--   * it must never produce an empty string. The plugin renders "" into the
+--     scan payload as JSON false (LAB-VERIFIED 2026-09-14), which is not a
+--     valid identifier. Absent means nil, which the plugin omits.
+-- -----------------------------------------------------------------------------
+local function raiser()
+  error("no request context")
+end
+
+-- shared: the table kong.ctx.shared returns, or nil to make the access raise.
+-- headers: name -> value, or nil to make kong.request.get_header raise.
+-- request_id: a string, or nil to make ngx.var.request_id raise.
+local function set_env(shared, headers, request_id)
+  kong = {
+    request = {
+      get_header = headers and function(name) return headers[name] end or raiser,
+    },
+  }
+  if shared == nil then
+    kong.ctx = setmetatable({}, { __index = function() raiser() end })
+  else
+    kong.ctx = { shared = shared }
+  end
+  ngx = {
+    var = request_id and { request_id = request_id }
+      or setmetatable({}, { __index = function() raiser() end }),
+  }
+end
+
+local function check_correlation(name, got, expected)
+  local problem = nil
+  if type(got) ~= "table" then
+    problem = "expected a table, got " .. type(got)
+  else
+    for _, field in ipairs({ "transaction_id", "session_id" }) do
+      local want, have = expected[field], got[field]
+      if have == "" then
+        problem = field .. " is an empty string, which the plugin renders as JSON false"
+      elseif have ~= nil and type(have) ~= "string" then
+        problem = field .. " is a " .. type(have) .. ", expected a string or nil"
+      elseif want ~= have then
+        problem = string.format("expected %s=%s, got %s", field,
+          tostring(want), tostring(have))
+      end
+      if problem then break end
+    end
+    if not problem and got.tr_id ~= nil then
+      problem = "tr_id must never be sent: on a live tenant it sets session_id"
+    end
+  end
+  report(name, problem)
+end
+
+local function correlation_raises(name, conf)
+  local ok, err = pcall(airs_correlation, conf)
+  local problem = nil
+  if not ok then
+    problem = "raised (" .. tostring(err) ..
+      "), which silently skips the scan on a stream"
+  end
+  report(name, problem)
+end
+
+local PARAMS = { params = {
+  transaction_header = "x-airs-transaction-id",
+  session_header = "x-airs-session-id",
+} }
+
+-- A plain request: the round is Kong's request id, and the conversation falls
+-- back to it so the prompt scan and the response scan share one session rather
+-- than getting one generated identifier each.
+set_env({}, {}, "req-1")
+check_correlation("airs_correlation: no client header, the round is the request id",
+  airs_correlation(PARAMS),
+  { transaction_id = "req-1", session_id = "req-1" })
+
+-- The INPUT to OUTPUT carry-over, which is the whole point: the second call
+-- gets the stashed table even though the PDK has gone away underneath it.
+local carried = {}
+set_env(carried, {}, "req-2")
+airs_correlation(PARAMS)
+set_env(carried, nil, nil)
+check_correlation("airs_correlation: OUTPUT reuses the round stashed in INPUT",
+  airs_correlation(PARAMS),
+  { transaction_id = "req-2", session_id = "req-2" })
+
+-- A caller that tracks its own conversation: the session spans its rounds.
+set_env({}, { ["x-airs-session-id"] = "conv-7" }, "req-3")
+check_correlation("airs_correlation: client session header groups the conversation",
+  airs_correlation(PARAMS),
+  { transaction_id = "req-3", session_id = "conv-7" })
+
+-- A caller that also names the round itself, to tie it to its own logs.
+set_env({}, { ["x-airs-transaction-id"] = "round-5" }, "req-4")
+check_correlation("airs_correlation: client transaction header overrides the round",
+  airs_correlation(PARAMS),
+  { transaction_id = "round-5", session_id = "round-5" })
+
+set_env({}, { ["x-airs-transaction-id"] = "round-6", ["x-airs-session-id"] = "conv-6" },
+  "req-5")
+check_correlation("airs_correlation: both headers together",
+  airs_correlation(PARAMS),
+  { transaction_id = "round-6", session_id = "conv-6" })
+
+set_env({}, { ["x-airs-session-id"] = string.rep("x", 257) }, "req-6")
+check_correlation("airs_correlation: an over-long header is ignored",
+  airs_correlation(PARAMS),
+  { transaction_id = "req-6", session_id = "req-6" })
+
+set_env({}, { ["x-airs-transaction-id"] = "", ["x-airs-session-id"] = "" }, "req-7")
+check_correlation("airs_correlation: an empty header is ignored, never forwarded",
+  airs_correlation(PARAMS),
+  { transaction_id = "req-7", session_id = "req-7" })
+
+set_env({}, { ["x-airs-session-id"] = 42 }, "req-8")
+check_correlation("airs_correlation: a non-string header value is ignored",
+  airs_correlation(PARAMS),
+  { transaction_id = "req-8", session_id = "req-8" })
+
+-- No header names configured at all: the round still works, no lookup happens.
+set_env({}, { ["x-airs-session-id"] = "conv-9" }, "req-9")
+check_correlation("airs_correlation: no header names configured, no lookup",
+  airs_correlation({ params = {} }),
+  { transaction_id = "req-9", session_id = "req-9" })
+
+set_env({}, { ["x-airs-session-id"] = "conv-10" }, "req-10")
+check_correlation("airs_correlation: conf with no params at all",
+  airs_correlation({}),
+  { transaction_id = "req-10", session_id = "req-10" })
+
+-- The streamed OUTPUT phase: a fresh shared table and no request context. Every
+-- field must come back nil, so the plugin omits them, and nothing may raise.
+set_env({}, nil, nil)
+check_correlation("airs_correlation: no request context yields no identifier",
+  airs_correlation(PARAMS), {})
+correlation_raises("airs_correlation: no request context does not raise", PARAMS)
+
+set_env(nil, {}, "req-11")
+check_correlation("airs_correlation: kong.ctx.shared unavailable yields no identifier",
+  airs_correlation(PARAMS), {})
+correlation_raises("airs_correlation: kong.ctx.shared unavailable does not raise", PARAMS)
+
+set_env({}, {}, "")
+check_correlation("airs_correlation: an empty request id yields no identifier",
+  airs_correlation(PARAMS), {})
+
+
+-- -----------------------------------------------------------------------------
+-- airs_contents, tool scanning. Two measured facts drive the whole shape of
+-- this function, and both are counter-intuitive:
+--
+--   1. Prisma AIRS judges the LAST element of contents[] and treats every
+--      earlier element as context only. An injection placed in any but the
+--      last element comes back allow/benign (LAB-VERIFIED 2026-09-14). So the
+--      function returns ONE element: splitting the conversation into one
+--      element per message reads like the schema's intent and silently stops
+--      scanning every turn but the newest.
+--   2. Tool definitions and the arguments a model generates for a tool call
+--      are absent from $(content) under every text_source (LAB-VERIFIED
+--      2026-09-08). Appending them to the scanned text is what puts them in
+--      front of the detectors; sending them as contents[].tool_event instead
+--      would work, and AIRS flags them there, but only if the tool event is
+--      the last element -- which would displace the prompt.
+--
+-- The assertions below pin the single-element shape for reason 1: a change
+-- that makes this return several elements passes a naive reading of the AIRS
+-- schema and turns off most of the scanning.
+-- -----------------------------------------------------------------------------
+local function set_body(body)
+  kong = {
+    request = {
+      get_body = function()
+        if body == nil then error("no request context") end
+        return body
+      end,
+    },
+  }
+end
+
+-- Renders contents[] as "prompt:<text>" per element, so an accidental second
+-- element shows up as a diff rather than passing silently.
+local function shape(items)
+  if type(items) ~= "table" then return "not a table: " .. type(items) end
+  local parts = {}
+  for i, item in ipairs(items) do
+    if type(item) ~= "table" then return "element " .. i .. " is not a table" end
+    local keys = {}
+    for k in pairs(item) do keys[#keys + 1] = k end
+    if #keys ~= 1 then return "element " .. i .. " has " .. #keys .. " keys" end
+    parts[#parts + 1] = keys[1] .. ":" .. tostring(item[keys[1]])
+  end
+  return table.concat(parts, "|")
+end
+
+local function check_shape(name, got, want)
+  local have = shape(got)
+  local problem = nil
+  if have ~= want then
+    problem = string.format("expected %q, got %q", want, have)
+  end
+  report(name, problem)
+end
+
+local CONF = { params = {} }
+local CALLS_CONF = { params = { tool_scan = "calls" } }
+local CATALOGUE_CONF = { params = { tool_scan = "catalogue" } }
+
+local TOOL_CHAT = {
+  tools = { { type = "function", ["function"] = {
+    name = "get_weather", description = "Get the weather",
+    parameters = { type = "object" } } } },
+  messages = {
+    { role = "user", content = "weather in Paris?" },
+    { role = "assistant", tool_calls = { { id = "call_1", type = "function",
+      ["function"] = { name = "get_weather", arguments = '{"city":"Paris"}' } } } },
+    { role = "tool", tool_call_id = "call_1", content = '{"temp":21}' },
+    { role = "assistant", content = "It is 21 degrees." },
+  },
+}
+
+-- The default: the conversation rebuilt from the request body, each turn
+-- attributed. text_source joins message content with no indication of who said
+-- what, and that alone gets ordinary conversation blocked as agent+injection --
+-- the assistant's own answer, unattributed, reads as an assertion planted in
+-- the prompt (LAB-VERIFIED 2026-09-14).
+set_body(TOOL_CHAT)
+check_shape("airs_contents: turns are attributed to user and assistant",
+  airs_contents("INPUT", "whatever text_source produced", CONF),
+  'prompt:user: weather in Paris?\n\n{"temp":21}\n\nassistant: It is 21 degrees.')
+
+-- The one role that must NOT be labelled. Writing "system:" ourselves puts the
+-- exact shape of a system-prompt spoof into the scanned text, and the whole
+-- conversation comes back agent+injection; the same text with the system
+-- content unlabelled is benign (LAB-VERIFIED 2026-09-14). Tool results and any
+-- unknown role go in unlabelled for the same reason.
+set_body({ messages = {
+  { role = "system", content = "You are a helpful assistant." },
+  { role = "user", content = "hello" },
+  { role = "assistant", content = "hi" },
+  { role = "other", content = "odd" },
+} })
+check_shape("airs_contents: system and unknown roles are never labelled",
+  airs_contents("INPUT", "flat", CONF),
+  "prompt:You are a helpful assistant.\n\nuser: hello\n\nassistant: hi\n\nodd")
+
+set_body(TOOL_CHAT)
+
+-- On: one element still, with the generated arguments now inside it.
+check_shape("airs_contents: calls appends the generated tool arguments",
+  airs_contents("INPUT", "flat", CALLS_CONF),
+  'prompt:user: weather in Paris?\n\nget_weather {"city":"Paris"}\n\n' ..
+  '{"temp":21}\n\nassistant: It is 21 degrees.')
+
+-- The catalogue goes first, and is its own opt-in because a JSON parameter
+-- schema reads as source code to a profile with that detector on.
+do
+  local items = airs_contents("INPUT", "flat", CATALOGUE_CONF)
+  local text = type(items) == "table" and type(items[1]) == "table" and items[1].prompt or nil
+  local problem = nil
+  if #items ~= 1 then
+    problem = "expected one element, got " .. shape(items)
+  elseif type(text) ~= "string" then
+    problem = "no prompt text"
+  elseif not text:find("get_weather", 1, true) then
+    problem = "the catalogue is not in the scanned text"
+  elseif not text:find("Get the weather", 1, true) then
+    problem = "the tool description is not in the scanned text"
+  elseif not text:find('{"city":"Paris"}', 1, true) then
+    problem = "catalogue mode dropped the call arguments"
+  end
+  report("airs_contents: catalogue prepends the tool declarations", problem)
+end
+
+-- The window applies to the assembled parts.
+check_shape("airs_contents: context_messages keeps the newest parts",
+  airs_contents("INPUT", "flat", { params = { tool_scan = "calls", context_messages = "2" } }),
+  'prompt:{"temp":21}\n\nassistant: It is 21 degrees.')
+
+-- The response leg is one element and never reads the request body: the model
+-- output is the thing to scan, and on a streamed segment there is no body to
+-- read anyway.
+check_shape("airs_contents: OUTPUT is the model output alone",
+  airs_contents("OUTPUT", "the model answer", CALLS_CONF),
+  "response:the model answer")
+
+-- Every way the body path can fail keeps the text_source selection.
+set_body(nil)
+check_shape("airs_contents: no request context keeps the flat text",
+  airs_contents("INPUT", "flat text", CALLS_CONF), "prompt:flat text")
+set_body({ prompt = "not an openai body" })
+check_shape("airs_contents: a body with no messages[] keeps the flat text",
+  airs_contents("INPUT", "flat text", CALLS_CONF), "prompt:flat text")
+set_body({ messages = "not a table" })
+check_shape("airs_contents: a non-table messages keeps the flat text",
+  airs_contents("INPUT", "flat text", CALLS_CONF), "prompt:flat text")
+set_body({ messages = {} })
+check_shape("airs_contents: an empty conversation keeps the flat text",
+  airs_contents("INPUT", "flat text", CALLS_CONF), "prompt:flat text")
+set_body({ messages = { { role = "user", content = "Q" }, "junk" } })
+check_shape("airs_contents: a malformed message keeps the flat text",
+  airs_contents("INPUT", "flat text", CALLS_CONF), "prompt:flat text")
+
+-- A message whose content is not a string is skipped, not fatal: an assistant
+-- message carrying only tool calls has no content at all.
+set_body({ messages = {
+  { role = "user", content = "weather in Paris?" },
+  { role = "assistant", content = nil, tool_calls = { { id = "c1", type = "function",
+    ["function"] = { name = "get_weather", arguments = '{"city":"Paris"}' } } } },
+} })
+check_shape("airs_contents: a content-less assistant tool call is not fatal",
+  airs_contents("INPUT", "flat", CALLS_CONF),
+  'prompt:user: weather in Paris?\n\nget_weather {"city":"Paris"}')
+
+-- A tool call with no usable arguments contributes nothing rather than a
+-- half-built fragment.
+set_body({ messages = {
+  { role = "user", content = "hi" },
+  { role = "assistant", tool_calls = { { id = "c1" } } },
+} })
+check_shape("airs_contents: a malformed tool call contributes nothing",
+  airs_contents("INPUT", "flat", CALLS_CONF), "prompt:user: hi")
+
+-- The type guard still has no fallback, tool scanning or not.
+set_body(TOOL_CHAT)
+check_raises("airs_contents: table content still raises with a body present",
+  airs_contents, { params = { api_key = "secret" } }, nil)
+check_raises("airs_contents: unknown phase still raises with a body present",
+  airs_contents, "SIDEWAYS", "hello")
+
+kong = nil
+
+-- -----------------------------------------------------------------------------
+-- airs_metadata. Labels the scan in the Prisma AIRS log. Same two rules as
+-- airs_correlation: never raise, and never emit an empty string.
+-- -----------------------------------------------------------------------------
+local function set_meta_env(opts)
+  opts = opts or {}
+  kong = {
+    request = {
+      get_body = function()
+        if opts.body == nil then error("no request context") end
+        return opts.body
+      end,
+      get_header = function(name)
+        if opts.headers == nil then error("no request context") end
+        return opts.headers[name]
+      end,
+    },
+    client = {
+      get_ip = function()
+        if opts.ip == nil then error("no request context") end
+        return opts.ip
+      end,
+      get_forwarded_ip = function()
+        if opts.forwarded == nil then error("no request context") end
+        return opts.forwarded
+      end,
+      get_consumer = function()
+        if opts.no_consumer_api then error("no request context") end
+        return opts.consumer
+      end,
+    },
+  }
+  ngx = { ctx = opts.ai_model and { ai_model = { name = opts.ai_model } } or {} }
+end
+
+local function check_meta(name, got, expected)
+  local problem = nil
+  if type(got) ~= "table" then
+    problem = "expected a table, got " .. type(got)
+  else
+    for _, field in ipairs({ "app_name", "ai_model", "user_ip", "app_user" }) do
+      local want, have = expected[field], got[field]
+      if have == "" then
+        problem = field .. " is an empty string, which the plugin renders as JSON false"
+      elseif have ~= nil and type(have) ~= "string" then
+        problem = field .. " is a " .. type(have) .. ", expected a string or nil"
+      elseif want ~= have then
+        problem = string.format("expected %s=%s, got %s", field,
+          tostring(want), tostring(have))
+      end
+      if problem then break end
+    end
+  end
+  report(name, problem)
+end
+
+local META_CONF = { params = { app_name = "kong-ai-gateway",
+                               user_header = "x-airs-user" } }
+
+set_meta_env({ ai_model = "local-llama", forwarded = "203.0.113.9", ip = "10.0.0.1",
+               consumer = { username = "team-a" },
+               headers = { ["x-airs-user"] = "someone@example.com" } })
+check_meta("airs_metadata: model, forwarded ip and authenticated consumer",
+  airs_metadata(META_CONF),
+  { app_name = "kong-ai-gateway", ai_model = "local-llama",
+    user_ip = "203.0.113.9", app_user = "team-a" })
+
+-- No consumer: the caller-supplied header is the fallback, never the reverse.
+set_meta_env({ ai_model = "local-llama", forwarded = "203.0.113.9", ip = "10.0.0.1",
+               consumer = nil, headers = { ["x-airs-user"] = "someone@example.com" } })
+check_meta("airs_metadata: the user header is used only without a consumer",
+  airs_metadata(META_CONF),
+  { app_name = "kong-ai-gateway", ai_model = "local-llama",
+    user_ip = "203.0.113.9", app_user = "someone@example.com" })
+
+set_meta_env({ ai_model = "local-llama", forwarded = nil, ip = "10.0.0.1",
+               headers = {} })
+check_meta("airs_metadata: falls back to the direct client ip",
+  airs_metadata(META_CONF),
+  { app_name = "kong-ai-gateway", ai_model = "local-llama",
+    user_ip = "10.0.0.1", app_user = nil })
+
+set_meta_env({ body = { model = "llama3.2:3b" }, ip = "10.0.0.1", headers = {} })
+check_meta("airs_metadata: falls back to the body model name",
+  airs_metadata(META_CONF),
+  { app_name = "kong-ai-gateway", ai_model = "llama3.2:3b",
+    user_ip = "10.0.0.1", app_user = nil })
+
+set_meta_env({ ip = "10.0.0.1", headers = { ["x-airs-user"] = "" } })
+check_meta("airs_metadata: an empty user header is never forwarded",
+  airs_metadata(META_CONF),
+  { app_name = "kong-ai-gateway", ai_model = nil,
+    user_ip = "10.0.0.1", app_user = nil })
+
+set_meta_env({ ip = "10.0.0.1",
+               headers = { ["x-airs-user"] = string.rep("u", 257) } })
+check_meta("airs_metadata: an over-long user header is ignored",
+  airs_metadata(META_CONF),
+  { app_name = "kong-ai-gateway", ai_model = nil,
+    user_ip = "10.0.0.1", app_user = nil })
+
+-- No header name configured: no lookup, and no crash on the nil name.
+set_meta_env({ ip = "10.0.0.1", headers = { ["x-airs-user"] = "someone" } })
+check_meta("airs_metadata: no user_header configured, no lookup",
+  airs_metadata({ params = { app_name = "kong-ai-gateway" } }),
+  { app_name = "kong-ai-gateway", ai_model = nil,
+    user_ip = "10.0.0.1", app_user = nil })
+
+-- The streamed OUTPUT segment: nothing reachable, nothing emitted, no raise.
+set_meta_env({})
+check_meta("airs_metadata: no request context yields app_name alone",
+  airs_metadata(META_CONF),
+  { app_name = "kong-ai-gateway", ai_model = nil, user_ip = nil, app_user = nil })
+local function metadata_raises(name, conf)
+  local ok, err = pcall(airs_metadata, conf)
+  local problem = nil
+  if not ok then
+    problem = "raised (" .. tostring(err) .. ")"
+  end
+  report(name, problem)
+end
+
+metadata_raises("airs_metadata: no request context does not raise", META_CONF)
+metadata_raises("airs_metadata: conf with no params does not raise", {})
+
 
 print(string.format("\n1..%d", total))
 if failures > 0 then
