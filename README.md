@@ -34,6 +34,8 @@ licence — see [Disclaimer](#disclaimer).*
 | Pre-tool call | ⚠️ | Generated tool arguments, via `params.tool_scan`. Ships off |
 | Post-tool call | ✅ | Tool results scanned on return |
 | MCP | ❌ | Kong exposes no guardrail on MCP traffic |
+| Any upstream LLM provider | ✅ | No provider list to maintain: Kong normalises the exchange before the guardrail runs |
+| Non-OpenAI client formats | ⚠️ | Scanned either way. Turn attribution needs a string `messages[].content`, which `anthropic` provides and a block array does not |
 
 Full matrix — capabilities, control planes, request formats:
 **[docs/coverage.md](docs/coverage.md)**.

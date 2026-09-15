@@ -12,6 +12,16 @@ An offline unit test does not make a configuration block `LAB-VERIFIED`: it
 proves the Lua is correct against the Prisma AIRS schema, not that Kong accepts
 the configuration.
 
+## Known gaps in this table
+
+| Claim | Status | What would close it |
+|---|---|---|
+| The `OUTPUT` scan on a native `formats` value carries the raw upstream JSON envelope rather than the answer alone | **LAB-VERIFIED 2026-09-15, with a caveat** | Reproducing it with a provider that matches the format. The lab paired `formats: [anthropic]` with an `ollama` provider; the prompt-leg results depend only on the caller's body and stand on their own, the response-leg one does not |
+| A non-`openai` `formats` value is not automatically degraded | **LAB-VERIFIED 2026-09-15**, and it corrected an inference | `anthropic` with string `content` is attributed byte for byte like `openai`; only the block-array form falls back to `text_source`. What decides it is the shape of `messages[].content`, not the format name |
+| `config/deck/airs-diagnostics-log.yaml` | **SYNTHESIZED** | Apply it with `deck` on a classic control plane |
+| `kong.client.get_consumer()` populates `metadata.app_user` | Reachable, never returned a value | One lab run with a key-auth consumer on the model |
+| The 2026-09-15 payload work on the `deck` variant | Not re-run | The Lua is byte-identical and CI enforces that, but the deck path has not been exercised since 2026-09-14 |
+
 Every configuration key used here, and every allowed value, comes from the
 published Kong plugin schema and the Prisma AIRS OpenAPI client — see
 [docs/sources.md](sources.md). The verdict functions are unit tested

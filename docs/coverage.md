@@ -50,16 +50,78 @@ Exactly one per AI Model. Two are accepted and give silently degraded coverage.
 | Per-request profile routing | ❌ | One profile per policy, by name |
 | Profile selection by UUID | ❌ | The profile **name** is sent |
 
-## Control planes and formats
+## Control planes
 
 | | Supported | Description |
 |---|:--:|---|
 | AI Gateway 2.x, `kongctl` | ✅ | The primary target. Policies of type `ai-custom-guardrail` |
 | Classic Gateway control plane, `deck` | ✅ | The same `config` block, wrapped as a plugin on a Service or Route |
-| OpenAI `chat/completions` request bodies | ✅ | |
-| Other client body shapes | ⚠️ | Still scanned, but the text falls back to `text_source` unattributed |
 
-Every claim above with its verification tag:
-[docs/verification-status.md](verification-status.md).
+## Upstream LLM providers
 
----
+| | Supported | Description |
+|---|:--:|---|
+| Every provider Kong AI Gateway proxies | ✅ | OpenAI, Azure AI, Anthropic, Bedrock, SageMaker, Gemini, Vercel, Cohere, Hugging Face, Llama, Mistral, xAI, DashScope, Kimi, Cerebras, Ollama, Databricks, DeepSeek, vLLM |
+
+**There is no provider list to maintain here, and that is the point of
+integrating at the guardrail extension point.** `ai-custom-guardrail` runs
+alongside `ai-proxy` / `ai-proxy-advanced`, after Kong has normalised the
+exchange, so the guardrail never sees a provider's native wire format. A plugin
+that reads the raw provider body has to parse each one and therefore publishes a
+list of the ones it understands; this integration does not, because Kong has
+already done that work. Adding a provider to your gateway does not change
+anything here.
+
+## Client-facing request format
+
+This is the axis that does matter, and it affects turn attribution rather than
+whether a scan happens. An AI Model's
+[`formats`](https://developer.konghq.com/ai-gateway/entities/ai-model/) array
+controls the shape callers use: `openai` (the default for every provider, where
+Kong translates upstream responses into the OpenAI shape), `anthropic`,
+`bedrock`, `cohere`, `gemini`, `huggingface`. A native format passes the request
+upstream without conversion.
+
+The scanned prompt is rebuilt from `messages[]` in the caller's body — that is
+what gives each turn its `user:` / `assistant:` label and what `params.tool_scan`
+reads. **What decides whether that works is the shape of `messages[].content`,
+not the name of the format.**
+
+LAB-VERIFIED 2026-09-15 against a data plane, payloads read off an echo server:
+
+| Caller's body | Prompt scan carries |
+|---|---|
+| `openai`, string content | `user: … \n\n assistant: … \n\n user: …` — attributed |
+| `anthropic`, **string** content | the same, byte for byte — attributed |
+| `anthropic`, **block-array** content (`[{"type":"text","text":…}]`) | the `text_source` fallback: unattributed, newest first |
+
+So a native format is not automatically degraded. Anthropic's Messages API
+accepts `content` as a plain string, and in that form the rebuild works exactly
+as it does on `openai`. It is the block-array form — which Anthropic, Bedrock
+Converse and any multimodal payload use — that has no string to find, and
+`airs_contents` then returns the flat `text_source` text rather than an empty
+scan. Two offline assertions pin that fallback.
+
+**A scan always happens.** What is lost with the block-array form is the turn
+attribution, and unattributed conversation is exactly what gets ordinary
+multi-turn exchanges flagged as prompt injection. Expect that false positive
+there and tune the profile for it.
+
+### The response leg on a native format
+
+Measured in the same run, and it is a separate caveat. On `openai` the `OUTPUT`
+scan carried the answer alone, 29 characters. On the native format it carried
+the **raw upstream JSON envelope**, 388 characters — the answer wrapped in the
+provider's own metadata (`model`, `created_at`, durations, token counts).
+
+The response is still scanned, and the answer text is inside what is scanned.
+But a JSON envelope is the kind of text a profile with the source-code detector
+flags, so a native format raises the false-positive risk on the response leg as
+well as on the prompt leg.
+
+> **Verification limit.** This lab paired `formats: [anthropic]` with an
+> `ollama` provider, which is a lab convenience rather than a realistic
+> deployment. The prompt-leg results depend only on the body the caller sends
+> and stand on their own. The response-leg result is consistent with Kong
+> documenting that a native format passes upstream without conversion, but it
+> has not been reproduced against a matching provider.
