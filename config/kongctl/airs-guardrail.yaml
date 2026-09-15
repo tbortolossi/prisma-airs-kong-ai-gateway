@@ -186,6 +186,26 @@
 #                 700-character stream, the same count as before this change.
 #                 That is what the pcall around every PDK call buys; without it
 #                 the scan is skipped silently.
+#   LAB-VERIFIED : array-shaped message content, 2026-09-15. A chat message
+#                 whose content is an array of parts -- what Open WebUI and
+#                 most OpenAI-compatible SDKs send once a file or image is
+#                 attached -- was silently dropped from the scanned text
+#                 whenever another turn in the same conversation was a plain
+#                 string, so an injection hidden in an array part reached
+#                 the model unscanned. airs_contents now assembles the text
+#                 parts and labels them like a string turn, skips image_url
+#                 / input_audio / file parts, and falls back to the flat
+#                 text_source text on any part shape it does not recognise.
+#                 Measured through the Open WebUI shim path
+#                 (X-OpenWebUI-Chat-Id / X-OpenWebUI-User-Email): a benign
+#                 array-content turn allowed; a string user turn, a string
+#                 assistant turn and an array-content user turn carrying the
+#                 injection in its text part blocked (HTTP 400); an
+#                 image-only turn followed by a text-part turn allowed; a
+#                 turn mixing a text part and an image_url part allowed;
+#                 test-airs.sh 5/5. The attributed payload itself was not
+#                 captured on an echo server this run -- 14 offline
+#                 assertions still pin its shape.
 #   NOT PRESENT : retry and cache options. The plugin schema has neither.
 #
 # Replace params.profile with your Prisma AIRS security profile name, and

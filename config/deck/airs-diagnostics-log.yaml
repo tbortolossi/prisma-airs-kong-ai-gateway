@@ -66,13 +66,15 @@
 #                  `return kong.request.get_header('h1')`
 #                  https://developer.konghq.com/gateway/pdk/reference/kong.request/
 #                  https://developer.konghq.com/plugins/http-log/
-#   SYNTHESIZED  : the five chunks below are this repository's response to
-#                  the 2026-09-15 finding, the same shape shipped in the
-#                  kongctl counterpart. They cover this record's URI fields.
-#                  They do NOT cover the node's proxy access log — see the
-#                  LAB-VERIFIED entry above — which is not a
-#                  custom_fields_by_lua field. Not independently run against
-#                  a live classic control plane.
+#   LAB-VERIFIED : 2026-09-15, round 21 (kongctl shape; see the kongctl
+#                  counterpart for the full measurement — the fix applies to
+#                  file-log regardless of which control plane declared it).
+#                  The five chunks below, the same shape shipped here,
+#                  reduced `POST /v1/chat/completions?apikey=PROBE&other=kept`
+#                  to zero occurrences of the marker in the record. They
+#                  cover this record's URI fields, not the node's proxy
+#                  access log — see the entry above. Not independently
+#                  re-run against a live classic control plane.
 #   DOCUMENTED   : key-auth's `key_in_query` (default true) controls whether
 #                  the plugin accepts the credential as a query parameter at
 #                  all; set it false and the credential is never in the query
@@ -105,10 +107,11 @@ plugins:
       # The query string is not one field. LAB-VERIFIED 2026-09-15 (live data
       # plane): a credential passed as ?apikey=... appears in
       # request.querystring.apikey, request.uri, request.url, upstream_uri
-      # AND ai.proxy.tried_targets[0].upstream_uri. The five chunks below
-      # (SYNTHESIZED, not independently re-run) wipe the querystring map
-      # outright and strip the query string from the other four URI fields,
-      # using documented PDK calls
+      # AND ai.proxy.tried_targets[0].upstream_uri. The five chunks below are
+      # LAB-VERIFIED 2026-09-15 (round 21, kongctl shape — see the kongctl
+      # counterpart; not independently re-run on a live classic control
+      # plane): zero occurrences of the marker in the record, using
+      # documented PDK calls
       # (https://developer.konghq.com/gateway/pdk/reference/kong.request/;
       # the custom_fields_by_lua-calls-the-PDK pattern is also shown at
       # https://developer.konghq.com/plugins/http-log/). This still does not
