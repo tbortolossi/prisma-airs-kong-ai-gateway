@@ -1,18 +1,64 @@
 # Prisma AIRS on Kong AI Gateway
 
 Enforce **Prisma AIRS AI Runtime (API Intercept)** as an inline guardrail on
-**Kong AI Gateway** — prompt scan, response scan, fail closed — using Kong's
-supported extension point rather than a custom Lua plugin.
+**Kong AI Gateway**. Prompt scan, response scan, fail closed.
 
-**Configuration only.** No Lua plugin, no data plane image rebuild. It works on a
-Konnect SaaS control plane with self-managed data planes, including Azure
-Container Apps and Kubernetes. Enforcement runs in your own infrastructure; only
-the text to be scanned leaves it, and it goes straight to your Prisma AIRS
-tenant.
+**Configuration only** — no Lua plugin, no data plane image rebuild. Works on a
+Konnect SaaS control plane with self-managed data planes.
 
-*Community assets, published by an individual contributor. Not an official Palo
-Alto Networks or Kong product, and covered by no support commitment from either
-vendor — see [Disclaimer](#disclaimer). Provided under the MIT licence.*
+*Community assets from an individual contributor. Not an official Palo Alto
+Networks or Kong product, no support commitment from either vendor. MIT
+licence. See [Disclaimer](#disclaimer).*
+
+---
+
+## Coverage
+
+✅ supported  ⚠️ partial, read the note  ❌ not available
+
+### Scanning phases
+
+| Phase | | Notes |
+|---|:--:|---|
+| Prompt | ✅ | Every request, before the model is called |
+| Response, not streamed | ✅ | One scan carrying the whole body |
+| Response, streamed | ⚠️ | Scanned in ~100-byte segments. An answer shorter than one segment is **not scanned at all**, and a block arrives after that segment reached the client |
+| Tool definitions and generated arguments | ⚠️ | `params.tool_scan`, ships off. No `text_source` exposes them |
+| Tool results | ✅ | A `role: "tool"` message is scanned as message content |
+| MCP traffic | ❌ | Kong allows no guardrail on MCP — the limit is Kong's, not Prisma AIRS's |
+
+### Features
+
+| Feature | | Notes |
+|---|:--:|---|
+| Fail closed on a Prisma AIRS outage | ✅ | The default. Two mechanisms covering two failure classes |
+| Monitor mode for a pilot | ✅ | `continue_on_detection`, ships commented out |
+| Session and round correlation | ✅ | `session_id` + `transaction_id`. Not on streamed responses |
+| `metadata`: app, user, user IP, model | ✅ | Rendered in the Strata Cloud Manager transaction panel |
+| Role attribution in the scanned text | ✅ | `user:` / `assistant:`, which is what keeps ordinary conversation benign |
+| Diagnostics log on the node | ✅ | Optional policy, with an on/off switch |
+| Generic body when the scan fails | ✅ | Optional policy |
+| Regional Prisma AIRS endpoints | ✅ | One URL to change |
+| Forward proxy, http and https | ✅ | `proxy_config` |
+| Prompt and response masking | ❌ | `allow_masking` exists in the plugin schema; not used or tested here |
+| `contents[].tool_event` objects | ❌ | Prisma AIRS accepts them, but judges only the last element, so they would displace the prompt |
+| Security profile by UUID | ❌ | The profile **name** is sent |
+
+### Control planes and formats
+
+| | | Notes |
+|---|:--:|---|
+| AI Gateway 2.x, `kongctl` | ✅ | The primary target |
+| Classic Gateway control plane, `deck` | ✅ | Same configuration, different wrapper |
+| OpenAI `chat/completions` request bodies | ✅ | |
+| Other client body shapes | ⚠️ | Still scanned, but the text falls back to `text_source` unattributed |
+
+Every claim above with its verification tag:
+[docs/verification-status.md](docs/verification-status.md).
+
+---
+
+## What this does
 
 ```
    Client app
@@ -36,58 +82,45 @@ vendor — see [Disclaimer](#disclaimer). Provided under the MIT licence.*
    Client app
 ```
 
-Attach exactly **one** policy per AI Model — `airs-scan` for prompt and
-response, `airs-prompt-scan` for a model that must stream. Never both: Kong runs
-one instance of a given plugin per request, and two attached policies give
-silently degraded coverage rather than an error.
+- Enforcement runs in your own infrastructure. Only the text to be scanned
+  leaves it, straight to your Prisma AIRS tenant.
+- Attach exactly **one** policy per AI Model. Two are accepted and give
+  silently degraded coverage.
+- Which detections fire is your security profile's business: prompt injection,
+  DLP, malicious URLs, toxic content, malicious code, source code, topic
+  violations, and on responses database security and ungrounded content.
 
 ---
 
-## Documentation
+## Quick start
 
-| If you want to | Read |
-|---|---|
-| install it | the TL;DR below |
-| deploy it properly, with rollout and troubleshooting | [docs/deployment-guide.md](docs/deployment-guide.md) |
-| know what it does **not** cover | [docs/limitations.md](docs/limitations.md) |
-| understand why it is built this way | [docs/design-decisions.md](docs/design-decisions.md) |
-| check a claim before repeating it to a customer | [docs/verification-status.md](docs/verification-status.md) |
-| find the upstream reference behind a field | [docs/sources.md](docs/sources.md) |
-
----
-
-## TL;DR — install and configure
-
-**Four things, and all four are required:**
+Four things, all four required:
 
 1. put the Prisma AIRS key on the data planes,
 2. set your security profile name in the YAML,
 3. apply the policies,
 4. **attach one of them to your AI Model.**
 
-That is the whole integration, provided the prerequisites below are already
-true. Steps 2 and 4 are the ones that get missed: leaving the placeholder
-profile blocks every request, and forgetting to attach the policy passes every
-request unscanned.
+Steps 2 and 4 are the ones that get missed, and they fail in opposite
+directions: the placeholder profile blocks everything, a policy that is not
+attached passes everything unscanned.
 
 ### Prerequisites
 
 | | |
 |---|---|
 | Kong Gateway data planes | 3.14 or later, with an AI licence |
-| Existing chain | `ai-proxy` or `ai-proxy-advanced` already in place — `ai-custom-guardrail` does not work standalone |
+| Existing chain | `ai-proxy` or `ai-proxy-advanced` — `ai-custom-guardrail` does not work standalone |
 | Prisma AIRS | An API Intercept application and a named security profile |
-| Network | Outbound HTTPS from the data planes to `service.api.aisecurity.paloaltonetworks.com:443` |
+| Network | Outbound HTTPS to `service.api.aisecurity.paloaltonetworks.com:443` |
 
-Below Kong Gateway 3.14, `ai-custom-guardrail` is unavailable. An alternative
-based on the `request-callout` plugin exists upstream, limited to prompt
-scanning and the OpenAI chat completion format.
+Below 3.14 the plugin does not exist; an upstream `request-callout` variant
+covers prompt scanning only.
 
-### 1. Put the Prisma AIRS key on the data planes
+### 1. Put the key on the data planes
 
-As the environment variable `AIRS_TOKEN`. The configuration never holds the key:
-it carries the reference `{vault://env/airs-token}`, which Kong resolves against
-that variable, inside your own infrastructure.
+As `AIRS_TOKEN`. The YAML carries `{vault://env/airs-token}` and never the key
+itself.
 
 ```bash
 # Azure Container Apps
@@ -105,18 +138,16 @@ kubectl create secret generic prisma-airs -n <ns> \
 ### 2. Set two values in the YAML
 
 In `params`, on both policies in
-[`config/kongctl/airs-guardrail.yaml`](config/kongctl/airs-guardrail.yaml).
-Nothing else has to change to get a working deployment:
+[`config/kongctl/airs-guardrail.yaml`](config/kongctl/airs-guardrail.yaml):
 
-| `params` key | Set it to | Ships as |
+| Key | Set it to | Ships as |
 |---|---|---|
-| `profile` | your Prisma AIRS security profile name, exactly | `kong-airs-prod` — a placeholder. Leave it and **every request fails closed** |
-| `app_name` | a label identifying this gateway in your scan logs | `kong-ai-gateway` |
+| `profile` | your security profile name, exactly | `kong-airs-prod` — a placeholder. Leave it and **every request fails closed** |
+| `app_name` | a label for this gateway in your scan logs | `kong-ai-gateway` |
 
-If your tenant is not on the global endpoint, change `request.url` too — it is
-the single point of change for the region.
+Not on the global endpoint? Change `request.url` too. It is the only place.
 
-### 3. Apply the policies
+### 3. Apply
 
 ```bash
 export KONNECT_PAT="<konnect pat>"
@@ -129,59 +160,55 @@ This creates the policies. It does **not** put them in the request path.
 
 ### 4. Attach one policy to your AI Model
 
-Add it to the model's `policies` list and apply the model:
-
 ```yaml
 ai_gateway_models:
   - ref: <your-model>
     # ...
     policies:
-      - !ref airs-scan        # prompt and response
-      # - !ref airs-prompt-scan   # prompt only, for a model that must stream
+      - !ref airs-scan          # prompt and response
+      # - !ref airs-prompt-scan # prompt only, for a model that must stream
 ```
-
-Exactly **one** of the two, never both. Two attached policies are accepted by
-the control plane and give silently degraded coverage: only one executes, and
-not the one declaration order suggests.
 
 > [!WARNING]
 > **This is the step that fails quietly.** Skip it and the gateway keeps
-> answering `200` with nothing scanned — no error, no log line, no sign in the
-> client's view. The two ways a first install goes wrong are this one, which
-> passes everything, and leaving `params.profile` at its placeholder, which
-> blocks everything. Step 5 tells the two apart in one run.
+> answering `200` with nothing scanned — no error, no log line, nothing visible
+> to the client.
 
 ### 5. Validate
 
 ```bash
 export KONG_PROXY_URL="https://<proxy>"
 export CLIENT_KEY="<client credential>"
-./scripts/test-airs.sh          # 5 cases: 1 allowed, 3 blocked, 1 streaming probe
+./scripts/test-airs.sh     # 1 allowed, 3 blocked, 1 streaming probe
 ```
 
-| What you see | What it means |
+| Result | Meaning |
 |---|---|
 | 5/5 as expected | done |
-| Everything allowed, nothing blocked | the policy is not attached — step 4 |
-| Everything blocked, including the legitimate case | the profile name is wrong, and fail-closed is doing its job — step 2 |
-| `HTTP 500` everywhere | Prisma AIRS cannot be reached: the key, the endpoint, or egress |
+| Everything allowed | the policy is not attached — step 4 |
+| Everything blocked | the profile name is wrong, fail-closed is working — step 2 |
+| `HTTP 500` everywhere | Prisma AIRS unreachable: key, endpoint, or egress |
 
-On a classic Gateway control plane the configuration is identical, wrapped for
-`deck`: use [`config/deck/airs-guardrail.yaml`](config/deck/airs-guardrail.yaml)
-and see the [deployment guide](docs/deployment-guide.md).
+On a classic control plane, same configuration wrapped for `deck`:
+[`config/deck/airs-guardrail.yaml`](config/deck/airs-guardrail.yaml) and the
+[deployment guide](docs/deployment-guide.md).
 
-### Optional `params`, all off unless set
+---
+
+## Optional settings
+
+### `params`, all off unless set
 
 | Key | What it turns on |
 |---|---|
-| `session_header` | the request header naming the **conversation**, forwarded to Prisma AIRS as `session_id` so a whole conversation is one AI Session. Without it, each exchange is its own session |
-| `user_header` | the request header naming the **end user**, used as `metadata.app_user` when no Kong consumer is authenticated. Caller-controlled: it labels a scan, it never authenticates one |
-| `transaction_header` | lets the caller name the **round** itself; by default the round is Kong's own request id, which the client also receives as `X-Kong-Request-Id` |
-| `tool_scan` | `calls` also scans the arguments a model generates for a tool call, which no `text_source` exposes; `catalogue` adds the `tools[]` declaration on top — expect a profile with the source-code detector to flag that one |
-| `context_messages` | caps how many of the most recent conversation parts are assembled, to bound cost and stay under the 2 MB scan limit |
+| `session_header` | the header naming the **conversation**, sent as `session_id`, so a whole conversation is one AI Session |
+| `user_header` | the header naming the **end user**, used as `metadata.app_user` when no Kong consumer is authenticated. It labels a scan, it never authenticates one |
+| `transaction_header` | lets the caller name the **round**; by default the round is Kong's request id, which the client also gets as `X-Kong-Request-Id` |
+| `tool_scan` | `calls` scans the arguments a model generates for a tool call; `catalogue` adds the `tools[]` declaration — expect a source-code detector to flag that one |
+| `context_messages` | caps how many recent conversation parts are assembled, to bound cost and stay under the 2 MB scan limit |
 
 With a front-end that already knows its user and its conversation, naming two
-headers is the whole integration. For Open WebUI, for instance:
+headers is the whole integration. Open WebUI, for instance:
 
 ```yaml
 params:
@@ -189,110 +216,69 @@ params:
   user_header: "x-openwebui-user-email"
 ```
 
-### Optional add-on policies
+### Add-on policies
 
 | File | What it does |
 |---|---|
-| [`config/kongctl/airs-diagnostics-log.yaml`](config/kongctl/airs-diagnostics-log.yaml) | writes the guardrail's own record — block reason, category, detections, per-phase scan latency, request id — to the data plane's standard output, so reporting a problem is one `docker logs` / `kubectl logs`. Carries an `enabled` switch and scrubs client credentials out of the record |
-| [`config/kongctl/airs-error-sanitizer.yaml`](config/kongctl/airs-error-sanitizer.yaml) | replaces the `HTTP 500` body Kong returns when Prisma AIRS cannot be consulted with a fixed generic one |
+| [`airs-diagnostics-log.yaml`](config/kongctl/airs-diagnostics-log.yaml) | writes the guardrail's record — block reason, category, detections, per-phase scan latency, request id — to the node's stdout, so a problem report is one `docker logs`. Has an `enabled` switch and scrubs client credentials |
+| [`airs-error-sanitizer.yaml`](config/kongctl/airs-error-sanitizer.yaml) | replaces the `HTTP 500` body returned when Prisma AIRS cannot be consulted with a fixed generic one |
 
-Each has a `config/deck/` counterpart for the classic control plane.
+Both have a `config/deck/` counterpart.
 
 ### What the client sees
 
 | Status | Meaning |
 |---|---|
 | `200` | allowed |
-| `400` | blocked by policy — body `{"error":{"message":"Blocked by Prisma AIRS [scan_id=...]"}}`. The category and the detection names never leave the gateway; the `scan_id` is how you find the full verdict in Strata Cloud Manager, or through `GET /v1/scan/results?scan_ids=` |
-| `500` | Prisma AIRS could not be consulted, and fail-closed refused the request rather than let it through unscanned |
+| `400` | blocked — `{"error":{"message":"Blocked by Prisma AIRS [scan_id=...]"}}`. The category and detection names never leave the gateway; the `scan_id` finds the full verdict in Strata Cloud Manager |
+| `500` | Prisma AIRS could not be consulted, and fail-closed refused rather than pass the request unscanned |
 
 ---
 
-## Limitations to plan for
+## Limitations
 
-Full detail, with the measurements behind each row, in
-**[docs/limitations.md](docs/limitations.md)**.
+Detail and measurements: **[docs/limitations.md](docs/limitations.md)**.
 
-| Limitation | Short version | What to do |
-|---|---|---|
-| **MCP traffic** | Kong allows no guardrail on MCP at all — the restriction is Kong's, not Prisma AIRS's | Call Prisma AIRS from outside the gateway |
-| **Streamed responses** | Scanned in segments of about 100 bytes, and **an answer shorter than one segment is never scanned at all** — which is most chat answers | Stop the response streaming where response coverage must be guaranteed |
-| **Blocks on a stream** | A flagged segment has already reached the client by the time the verdict arrives | Treat streaming response coverage as best effort |
-| **Tool definitions and arguments** | No `text_source` exposes them | `params.tool_scan`, off by default |
-| **Correlation on a stream** | The `OUTPUT` phase has no request context, so those scans carry no session or round | Non-streamed exchanges are unaffected |
-| **Payload size** | Prisma AIRS refuses a scan above about 2 MB | `params.context_messages`, or `text_source: last_message` |
+| Limitation | What to do |
+|---|---|
+| **MCP traffic is not covered at all** | Call Prisma AIRS from outside the gateway |
+| **A streamed answer shorter than ~100 bytes is never scanned** — most chat answers | Stop the response streaming where coverage must be guaranteed |
+| **A block on a stream arrives after the flagged segment reached the client** | Treat streamed response coverage as best effort |
+| **Streamed scans carry no session or round** | Non-streamed exchanges are unaffected |
+| **Tool definitions and arguments need `params.tool_scan`** | Turn it on, knowing `catalogue` trips source-code detectors |
+| **Prisma AIRS refuses a scan above about 2 MB** | `params.context_messages`, or `text_source: last_message` |
 
-**Prompt scanning is never affected by any of these.** Every row above is on the
-response leg; the prompt is scanned before the model is called, on every path
-and in every posture.
-
-Detections available depend on your Prisma AIRS security profile: prompt
-injection, sensitive data (DLP), malicious URLs, toxic content, malicious code,
-source code, topic violations, and — on responses — database security and
-ungrounded content.
+**Prompt scanning is never affected by any of this.** Every row is on the
+response leg.
 
 ---
 
-## Why this exists
+## Documentation
 
-Kong AI Gateway 2.x replaced the plugin-centric model with AI entities and
-[AI Policies](https://developer.konghq.com/ai-gateway/policies/). Two
-consequences follow, and together they are the reason this repository exists.
+| To | Read |
+|---|---|
+| deploy properly, with rollout and troubleshooting | [deployment-guide.md](docs/deployment-guide.md) |
+| know what is not covered | [limitations.md](docs/limitations.md) |
+| understand why it is built this way | [design-decisions.md](docs/design-decisions.md) |
+| check a claim before repeating it | [verification-status.md](docs/verification-status.md) |
+| find the upstream reference behind a field | [sources.md](docs/sources.md) |
+| know why this repository exists | [why-this-exists.md](docs/why-this-exists.md) |
 
-**Custom Lua plugins have no place on an AI Gateway 2.x control plane.** The
-Prisma AIRS plugin published by Palo Alto Networks
-([prisma-airs-integrations, `custom-plugin-v3`](https://github.com/PaloAltoNetworks/prisma-airs-integrations/tree/main/Kong/custom-plugin-v3))
-remains fully valid where a custom plugin can still be loaded — self-hosted Kong
-Gateway, and Konnect hybrid with a
-[custom data plane image](https://developer.konghq.com/custom-plugins/konnect-hybrid-mode/).
-It cannot be deployed on an AI Gateway 2.x control plane. Teams moving to v2
-lose the integration they had.
-
-This is a control-plane restriction, not a runtime one. The AI Gateway 2.x data
-plane is itself a Kong Gateway 3.14 runtime carrying an AI Gateway version
-label. What refuses the custom Lua plugin path on 2.x is the Konnect API:
-applying an `ai_gateway_policies` entry of `type: prisma-airs-intercept` is
-rejected outright, HTTP 400, "policy type 'prisma-airs-intercept' is not
-supported". The catalogue is closed at the control plane, independently of what
-the data plane underneath could otherwise run.
-
-**The v2 policy catalogue has no Prisma AIRS type.** It ships vendor-specific
-guardrail policies for `ai-aws-guardrails`, `ai-azure-content-safety`,
-`ai-gcp-model-armor` and `ai-lakera-guard`, joined by NVIDIA NeMo Guardrails
-since AI Gateway 2.0.1. Prisma AIRS is not among them. There is nothing to
-select in the catalogue.
-
-What v2 does provide is `ai-custom-guardrail`, Kong's supported extension point
-for calling an external guardrail service over HTTP. This repository uses it to
-carry the same enforcement as declarative configuration, applied through
-`kongctl` on an AI Gateway 2.x control plane or through `deck` on a classic
-Gateway control plane.
-
----
+Lab procedures: [tool calls](docs/lab-tool-calls.md),
+[streaming](docs/lab-streaming.md),
+[classic control plane](docs/lab-classic-control-plane.md).
 
 ## Repository layout
 
 ```
-docs/deployment-guide.md             step-by-step deployment procedure
-docs/limitations.md                  what this does not cover, and why
-docs/design-decisions.md             why the configuration is shaped this way
-docs/verification-status.md          every claim, with its verification tag
-docs/sources.md                      canonical upstream references
-docs/lab-tool-calls.md               lab procedure: is function calling scanned?
-docs/lab-streaming.md                lab procedure: is a streamed response scanned, and how?
-docs/lab-classic-control-plane.md    lab procedure: the deck variant on a classic control plane
-config/kongctl/airs-guardrail.yaml   AI Gateway 2.x
-config/deck/airs-guardrail.yaml      classic Gateway control plane
-config/kongctl/airs-error-sanitizer.yaml   optional: generic body when Prisma AIRS cannot be consulted
-config/deck/airs-error-sanitizer.yaml      same, classic control plane
-config/kongctl/airs-diagnostics-log.yaml   optional: one diagnostics log on the node, with an on/off switch
-config/deck/airs-diagnostics-log.yaml      same, classic control plane
-scripts/test-airs.sh                 five-case validation suite, needs a live gateway
-scripts/run-lua-tests.sh             offline unit tests for the verdict functions
-scripts/test-verdict-functions.lua   the assertions those tests run
-scripts/check-plugin-schema.py       config parity and live-schema validation, used in CI
-scripts/lab-echo-server.py           stands in for Prisma AIRS, logs what Kong emits
-scripts/lab-tool-call-probe.sh       one completion, a marker per tool call position
+config/kongctl/airs-guardrail.yaml         AI Gateway 2.x
+config/deck/airs-guardrail.yaml            classic Gateway control plane
+config/*/airs-diagnostics-log.yaml         optional: diagnostics log, on/off switch
+config/*/airs-error-sanitizer.yaml         optional: generic body on a scan failure
+scripts/test-airs.sh                       five-case validation, needs a live gateway
+scripts/run-lua-tests.sh                   offline unit tests for the verdict functions
+scripts/check-plugin-schema.py             config parity and schema validation, used in CI
+scripts/lab-echo-server.py                 stands in for Prisma AIRS, logs what Kong emits
 ```
 
 ## Related

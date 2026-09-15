@@ -178,6 +178,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **The README leads with a coverage matrix.** Following the shape used by the
+  other integrations in `PaloAltoNetworks/prisma-airs-integrations` (the Azure
+  APIM assets in particular), the first thing on the page is now three tables
+  saying what is supported, what is partial and what is not: scanning phases,
+  features, control planes and request formats. Everything carries a note, and
+  the honest entries are there too — masking, `tool_event` objects and profile
+  selection by UUID are not available, streamed response scanning and tool-call
+  scanning are partial.
 - **The README is an entry point again, not a manual.** It was 975 lines, most
   of it reference material a reader had to scroll past to find the install
   steps. Now 281: what it is, a TL;DR that states plainly what has to be done,

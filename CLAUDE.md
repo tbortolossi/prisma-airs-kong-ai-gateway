@@ -35,6 +35,7 @@ SECURITY.md                          how to report a security issue
 CHANGELOG.md                         released changes
 docs/deployment-guide.md             customer-facing procedure
 docs/limitations.md                  what the integration does not cover
+docs/why-this-exists.md              the AI Gateway 2.x gap this repository fills
 docs/design-decisions.md             why the configuration is shaped this way
 docs/verification-status.md          every claim with its verification tag
 docs/sources.md                      canonical upstream references
