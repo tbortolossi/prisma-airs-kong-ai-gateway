@@ -34,6 +34,7 @@ licence — see [Disclaimer](#disclaimer).*
 | Pre-tool call | ⚠️ | Generated tool arguments, via `params.tool_scan`. Ships off |
 | Post-tool call | ✅ | Tool results scanned on return |
 | MCP | ❌ | Kong exposes no guardrail on MCP traffic |
+| Any upstream LLM provider | ✅ | No provider list to maintain: Kong normalises the exchange before the guardrail runs |
 
 Full matrix — capabilities, control planes, request formats:
 **[docs/coverage.md](docs/coverage.md)**.

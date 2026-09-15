@@ -12,6 +12,15 @@ An offline unit test does not make a configuration block `LAB-VERIFIED`: it
 proves the Lua is correct against the Prisma AIRS schema, not that Kong accepts
 the configuration.
 
+## Known gaps in this table
+
+| Claim | Status | What would close it |
+|---|---|---|
+| A non-`openai` AI Model `formats` value degrades to the `text_source` fallback rather than breaking | **SYNTHESIZED** | One lab run with `formats: [anthropic]` or `[bedrock]`, checking the scan payload on an echo server. The fallback code path is covered by the offline suite; what is inferred is that those formats carry no usable string in `messages[]` |
+| `config/deck/airs-diagnostics-log.yaml` | **SYNTHESIZED** | Apply it with `deck` on a classic control plane |
+| `kong.client.get_consumer()` populates `metadata.app_user` | Reachable, never returned a value | One lab run with a key-auth consumer on the model |
+| The 2026-09-15 payload work on the `deck` variant | Not re-run | The Lua is byte-identical and CI enforces that, but the deck path has not been exercised since 2026-09-14 |
+
 Every configuration key used here, and every allowed value, comes from the
 published Kong plugin schema and the Prisma AIRS OpenAPI client — see
 [docs/sources.md](sources.md). The verdict functions are unit tested

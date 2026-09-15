@@ -50,16 +50,59 @@ Exactly one per AI Model. Two are accepted and give silently degraded coverage.
 | Per-request profile routing | ❌ | One profile per policy, by name |
 | Profile selection by UUID | ❌ | The profile **name** is sent |
 
-## Control planes and formats
+## Control planes
 
 | | Supported | Description |
 |---|:--:|---|
 | AI Gateway 2.x, `kongctl` | ✅ | The primary target. Policies of type `ai-custom-guardrail` |
 | Classic Gateway control plane, `deck` | ✅ | The same `config` block, wrapped as a plugin on a Service or Route |
-| OpenAI `chat/completions` request bodies | ✅ | |
-| Other client body shapes | ⚠️ | Still scanned, but the text falls back to `text_source` unattributed |
 
-Every claim above with its verification tag:
-[docs/verification-status.md](verification-status.md).
+## Upstream LLM providers
 
----
+| | Supported | Description |
+|---|:--:|---|
+| Every provider Kong AI Gateway proxies | ✅ | OpenAI, Azure AI, Anthropic, Bedrock, SageMaker, Gemini, Vercel, Cohere, Hugging Face, Llama, Mistral, xAI, DashScope, Kimi, Cerebras, Ollama, Databricks, DeepSeek, vLLM |
+
+**There is no provider list to maintain here, and that is the point of
+integrating at the guardrail extension point.** `ai-custom-guardrail` runs
+alongside `ai-proxy` / `ai-proxy-advanced`, after Kong has normalised the
+exchange, so the guardrail never sees a provider's native wire format. A plugin
+that reads the raw provider body has to parse each one and therefore publishes a
+list of the ones it understands; this integration does not, because Kong has
+already done that work. Adding a provider to your gateway does not change
+anything here.
+
+## Client-facing request format
+
+This is the axis that does matter, and it affects one feature rather than
+whether a scan happens. An AI Model's
+[`formats`](https://developer.konghq.com/ai-gateway/entities/ai-model/) array
+controls the shape callers use. `openai` is the default for every provider, and
+Kong translates upstream responses into it; a native format passes the request
+upstream without conversion.
+
+The scanned text is rebuilt from `messages[]` in the caller's body, which is
+what gives each turn its `user:` / `assistant:` label and what `params.tool_scan`
+reads. That rebuild is OpenAI-shaped.
+
+| `formats` | Turn attribution and `tool_scan` | Scanning itself |
+|---|:--:|---|
+| `openai` (default) | ✅ | Full |
+| `anthropic`, `bedrock` | ⚠️ | Unaffected — falls back to `text_source`, scanned but unattributed |
+| `cohere`, `gemini`, `huggingface` | ⚠️ | Unaffected — falls back to `text_source`, scanned but unattributed |
+
+The fallback is deliberate and it is not a failure mode: when no usable string
+is found in `messages[]`, `airs_contents` returns the flat `text_source` text
+rather than an empty scan. Two offline assertions pin it. **A scan always
+happens.** What is lost on a native format is the turn attribution — and
+unattributed conversation is what gets ordinary multi-turn exchanges flagged as
+prompt injection, so on a native format expect that false positive and tune the
+profile for it.
+
+> **Verification.** The fallback path itself is LAB-VERIFIED through the offline
+> suite. The mapping from each native format to "no usable string in
+> `messages[]`" is **SYNTHESIZED** — inferred from the vendors' own request
+> schemas, where message content is an array of blocks rather than a string.
+> No native format has been exercised against a live gateway. See
+> [verification-status.md](verification-status.md).
+
