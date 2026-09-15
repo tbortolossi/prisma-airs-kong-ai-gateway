@@ -58,10 +58,17 @@ silently degraded coverage rather than an error.
 
 ## TL;DR — install and configure
 
-**What you actually have to do: deploy the YAML, put the Prisma AIRS key on the
-data planes, set your profile name, and attach the policy to your AI Model.**
+**Four things, and all four are required:**
+
+1. put the Prisma AIRS key on the data planes,
+2. set your security profile name in the YAML,
+3. apply the policies,
+4. **attach one of them to your AI Model.**
+
 That is the whole integration, provided the prerequisites below are already
-true.
+true. Steps 2 and 4 are the ones that get missed: leaving the placeholder
+profile blocks every request, and forgetting to attach the policy passes every
+request unscanned.
 
 ### Prerequisites
 
@@ -109,21 +116,55 @@ Nothing else has to change to get a working deployment:
 If your tenant is not on the global endpoint, change `request.url` too — it is
 the single point of change for the region.
 
-### 3. Apply, attach, validate
+### 3. Apply the policies
 
 ```bash
 export KONNECT_PAT="<konnect pat>"
 export AI_GATEWAY_ID="<ai gateway id>"
 
 kongctl apply -f config/kongctl/airs-guardrail.yaml --pat "$KONNECT_PAT"
-# then attach ONE policy to your AI Model:
-#   policies:
-#     - !ref airs-scan
+```
 
+This creates the policies. It does **not** put them in the request path.
+
+### 4. Attach one policy to your AI Model
+
+Add it to the model's `policies` list and apply the model:
+
+```yaml
+ai_gateway_models:
+  - ref: <your-model>
+    # ...
+    policies:
+      - !ref airs-scan        # prompt and response
+      # - !ref airs-prompt-scan   # prompt only, for a model that must stream
+```
+
+Exactly **one** of the two, never both. Two attached policies are accepted by
+the control plane and give silently degraded coverage: only one executes, and
+not the one declaration order suggests.
+
+> [!WARNING]
+> **This is the step that fails quietly.** Skip it and the gateway keeps
+> answering `200` with nothing scanned — no error, no log line, no sign in the
+> client's view. The two ways a first install goes wrong are this one, which
+> passes everything, and leaving `params.profile` at its placeholder, which
+> blocks everything. Step 5 tells the two apart in one run.
+
+### 5. Validate
+
+```bash
 export KONG_PROXY_URL="https://<proxy>"
 export CLIENT_KEY="<client credential>"
 ./scripts/test-airs.sh          # 5 cases: 1 allowed, 3 blocked, 1 streaming probe
 ```
+
+| What you see | What it means |
+|---|---|
+| 5/5 as expected | done |
+| Everything allowed, nothing blocked | the policy is not attached — step 4 |
+| Everything blocked, including the legitimate case | the profile name is wrong, and fail-closed is doing its job — step 2 |
+| `HTTP 500` everywhere | Prisma AIRS cannot be reached: the key, the endpoint, or egress |
 
 On a classic Gateway control plane the configuration is identical, wrapped for
 `deck`: use [`config/deck/airs-guardrail.yaml`](config/deck/airs-guardrail.yaml)
