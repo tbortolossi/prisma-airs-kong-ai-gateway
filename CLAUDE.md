@@ -33,7 +33,9 @@ README.md                            public entry point
 CONTRIBUTING.md                      how to work on this repo
 SECURITY.md                          how to report a security issue
 CHANGELOG.md                         released changes
+docs/install.md                      four-step install, every optional setting
 docs/deployment-guide.md             customer-facing procedure
+docs/coverage.md                     what is scanned, partially scanned, not reached
 docs/limitations.md                  what the integration does not cover
 docs/why-this-exists.md              the AI Gateway 2.x gap this repository fills
 docs/design-decisions.md             why the configuration is shaped this way

@@ -178,6 +178,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **The README is a page, not a manual: 760 lines to 129.** It is now what a
+  reader needs before deciding to try this — what it is, one diagram, the
+  scanning-phase table, four install steps, the limitations that would change
+  their mind, and a map of where everything else lives. Nothing was dropped;
+  the depth moved to `docs/install.md` (commands, prerequisites, every optional
+  setting) and `docs/coverage.md` (the full matrix: capabilities, control
+  planes, request formats), joining the documents split out earlier.
 - **The README's coverage matrix uses the same taxonomy as the other Kong
   integration.** `PaloAltoNetworks/prisma-airs-integrations` `Kong/custom-plugin-v3`
   names its scanning phases Prompt / Response / Streaming / Pre-tool call /
