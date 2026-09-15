@@ -1,7 +1,12 @@
 # Prisma AIRS on Kong AI Gateway
 
 Enforce **Prisma AIRS AI Runtime (API Intercept)** as an inline guardrail on
-**Kong AI Gateway**. Prompt scan, response scan, fail closed.
+**Kong AI Gateway**, where a custom Lua plugin can no longer be loaded.
+
+Fails closed by default, scans both legs, attributes every turn so ordinary
+conversation is not read as an injection, correlates each scan to its
+conversation and its round, and ships a 111-assertion offline suite plus a
+five-case live one that each run in one command.
 
 **Configuration only** — no Lua plugin, no data plane image rebuild. Works on a
 Konnect SaaS control plane with self-managed data planes.
@@ -18,38 +23,48 @@ licence. See [Disclaimer](#disclaimer).*
 
 ### Scanning phases
 
-| Phase | | Notes |
+| Scanning phase | Supported | Description |
 |---|:--:|---|
-| Prompt | ✅ | Every request, before the model is called |
-| Response, not streamed | ✅ | One scan carrying the whole body |
-| Response, streamed | ⚠️ | Scanned in ~100-byte segments. An answer shorter than one segment is **not scanned at all**, and a block arrives after that segment reached the client |
-| Tool definitions and generated arguments | ⚠️ | `params.tool_scan`, ships off. No `text_source` exposes them |
-| Tool results | ✅ | A `role: "tool"` message is scanned as message content |
-| MCP traffic | ❌ | Kong allows no guardrail on MCP — the limit is Kong's, not Prisma AIRS's |
+| Prompt | ✅ | Scanned before the model is called, on every path and in every posture |
+| Response | ✅ | Not streamed: one scan carrying the whole body, before the client receives it |
+| Streaming | ⚠️ | Scanned in segments of about 100 bytes. An answer shorter than one segment is **not scanned at all**, and a block arrives after that segment has reached the client |
+| Pre-tool call | ⚠️ | The arguments a model generates for a tool call, and optionally the `tools[]` catalogue, via `params.tool_scan`. Ships off — no `text_source` exposes them |
+| Post-tool call | ✅ | Tool results scanned on return: a `role: "tool"` message is message content like any other |
+| MCP | ❌ | Kong allows no guardrail on MCP traffic. The limit is Kong's — Prisma AIRS scans MCP natively |
 
-### Features
+### Which policy to attach
 
-| Feature | | Notes |
+Exactly one per AI Model. Two are accepted and give silently degraded coverage.
+
+| Policy | `guarding_mode` | Covers | Use when |
+|---|:--:|---|---|
+| `airs-scan` | `BOTH` | prompt and response | default |
+| `airs-prompt-scan` | `INPUT` | prompt only | the model must stream, and you want the coverage gap stated rather than hidden |
+
+### Additional capabilities
+
+| Capability | Supported | Description |
 |---|:--:|---|
 | Fail closed on a Prisma AIRS outage | ✅ | The default. Two mechanisms covering two failure classes |
-| Monitor mode for a pilot | ✅ | `continue_on_detection`, ships commented out |
-| Session and round correlation | ✅ | `session_id` + `transaction_id`. Not on streamed responses |
-| `metadata`: app, user, user IP, model | ✅ | Rendered in the Strata Cloud Manager transaction panel |
-| Role attribution in the scanned text | ✅ | `user:` / `assistant:`, which is what keeps ordinary conversation benign |
-| Diagnostics log on the node | ✅ | Optional policy, with an on/off switch |
-| Generic body when the scan fails | ✅ | Optional policy |
-| Regional Prisma AIRS endpoints | ✅ | One URL to change |
-| Forward proxy, http and https | ✅ | `proxy_config` |
-| Prompt and response masking | ❌ | `allow_masking` exists in the plugin schema; not used or tested here |
-| `contents[].tool_event` objects | ❌ | Prisma AIRS accepts them, but judges only the last element, so they would displace the prompt |
-| Security profile by UUID | ❌ | The profile **name** is sent |
+| Observe-only rollout | ✅ | `continue_on_detection` scans and records without blocking; ships commented out |
+| Session and round correlation | ✅ | `session_id` and `transaction_id`, so one conversation is one AI Session. Not on streamed responses |
+| Scan metadata | ✅ | Application, end user, user IP and model name, rendered in the Strata Cloud Manager transaction panel |
+| Role attribution in the scanned text | ✅ | Turns prefixed `user:` / `assistant:`, which is what keeps ordinary conversation benign |
+| Structured evidence | ✅ | The guardrail's own record on Kong's log serializer, as an optional policy with an on/off switch |
+| Regional endpoints | ✅ | One URL, the single point of change |
+| Forward proxy | ✅ | `proxy_config`, http and https pairs, both exercised against the real endpoint. Ships commented out: the published schema page does not list the field yet |
+| Generic body when the scan fails | ✅ | Optional policy replacing the `HTTP 500` internal text |
+| DLP masking | ❌ | `allow_masking` exists in the plugin schema; not used or tested here |
+| `contents[].tool_event` objects | ❌ | Prisma AIRS accepts them, but judges only the last element of `contents[]`, so one would displace the prompt |
+| Per-request profile routing | ❌ | One profile per policy, by name |
+| Profile selection by UUID | ❌ | The profile **name** is sent |
 
 ### Control planes and formats
 
-| | | Notes |
+| | Supported | Description |
 |---|:--:|---|
-| AI Gateway 2.x, `kongctl` | ✅ | The primary target |
-| Classic Gateway control plane, `deck` | ✅ | Same configuration, different wrapper |
+| AI Gateway 2.x, `kongctl` | ✅ | The primary target. Policies of type `ai-custom-guardrail` |
+| Classic Gateway control plane, `deck` | ✅ | The same `config` block, wrapped as a plugin on a Service or Route |
 | OpenAI `chat/completions` request bodies | ✅ | |
 | Other client body shapes | ⚠️ | Still scanned, but the text falls back to `text_source` unattributed |
 
@@ -84,8 +99,6 @@ Every claim above with its verification tag:
 
 - Enforcement runs in your own infrastructure. Only the text to be scanned
   leaves it, straight to your Prisma AIRS tenant.
-- Attach exactly **one** policy per AI Model. Two are accepted and give
-  silently degraded coverage.
 - Which detections fire is your security profile's business: prompt injection,
   DLP, malicious URLs, toxic content, malicious code, source code, topic
   violations, and on responses database security and ungrounded content.

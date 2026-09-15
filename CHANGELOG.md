@@ -178,6 +178,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **The README's coverage matrix uses the same taxonomy as the other Kong
+  integration.** `PaloAltoNetworks/prisma-airs-integrations` `Kong/custom-plugin-v3`
+  names its scanning phases Prompt / Response / Streaming / Pre-tool call /
+  Post-tool call, and carries a separate capabilities table and a "which flavour
+  to deploy" table. This README now uses the same row labels and the same three
+  tables, so the two integrations can be compared line by line rather than
+  translated. "Which policy to attach" is the local equivalent of the flavour
+  table: `airs-scan` against `airs-prompt-scan`, one per AI Model.
 - **The README leads with a coverage matrix.** Following the shape used by the
   other integrations in `PaloAltoNetworks/prisma-airs-integrations` (the Azure
   APIM assets in particular), the first thing on the page is now three tables
