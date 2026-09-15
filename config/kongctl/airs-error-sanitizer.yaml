@@ -9,8 +9,11 @@
 # When the call to Prisma AIRS fails (unreachable, timeout, non-2xx, body that
 # is not JSON) and stop_on_error is true, ai-custom-guardrail answers HTTP 500
 # with its internal error text, and relays the guardrail service's own error
-# body when there is one. rejection_mode does not apply to that path: it only
-# shapes a block. This policy replaces that body with a fixed generic one.
+# body when there is one. A guardrail Lua function that raises, or that fails
+# to render its arguments, produces a different HTTP 500 body: the templating
+# error reaches the client verbatim, function name and line number included.
+# rejection_mode does not apply to either path: it only shapes a block. This
+# policy replaces both bodies with the same fixed generic one.
 #
 # VERIFICATION STATUS
 #   DOCUMENTED   : post-function config.header_filter and config.body_filter,
@@ -25,11 +28,25 @@
 #                  message; allowed responses, streamed or not, are untouched.
 #                  exit-transformer was tried first and does not intercept
 #                  this 500, with or without handle_unknown/handle_unexpected.
+#                  This run only exercised the "custom guardrail service"
+#                  wording, i.e. a failed call to Prisma AIRS.
+#   SYNTHESIZED  : the two added matches, "failed to evaluate function" and
+#                  "failed to render by function", are Kong's own wording for
+#                  a raising or a mis-templated guardrail function (see
+#                  CLAUDE.local.md Q12, LAB-VERIFIED 2026-09-08, for the
+#                  "failed to evaluate function" body observed verbatim on the
+#                  client). Their presence in the 500 body has not itself been
+#                  re-run against this sanitizer; the mechanism is identical to
+#                  the already-verified match, so the extension is a same-day
+#                  synthesis rather than a guess at unrelated wording.
 #
-# Limits. The match is on Kong's own wording, "custom guardrail service". A
-# Kong release that rewords it turns this policy into a no-op: the body goes
-# back to the verbose form, traffic is never blocked by this policy. The data
-# plane error log keeps the original text either way.
+# Limits. The match is on Kong's own wording: "custom guardrail service" (a
+# failed call to Prisma AIRS), "failed to evaluate function" (a guardrail
+# function that raised), and "failed to render by function" (a guardrail
+# function Kong could not template). A Kong release that rewords any of the
+# three turns this policy into a no-op for that case: the body goes back to
+# the verbose form, traffic is never blocked by this policy. The data plane
+# error log keeps the original text either way.
 #
 # Attach it to the same AI Model as airs-scan or airs-prompt-scan:
 #
@@ -53,7 +70,9 @@ ai_gateway_policies:
         - |
           if kong.response.get_status() == 500 then
             local b = kong.response.get_raw_body()
-            if b and b:find("custom guardrail service", 1, true) then
+            if b and (b:find("custom guardrail service", 1, true)
+                or b:find("failed to evaluate function", 1, true)
+                or b:find("failed to render by function", 1, true)) then
               kong.response.set_raw_body('{"error":{"message":"Guardrail unavailable"}}')
             end
           end

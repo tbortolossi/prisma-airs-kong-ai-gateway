@@ -52,6 +52,24 @@ EXPECTED = [
 # Headers that must never reach a log file, even in a lab.
 REDACTED = {"x-pan-token", "authorization", "cookie", "proxy-authorization"}
 
+# Top-level request.body keys that must never reach a log file or stdout,
+# even in a lab: if an operator switches request.auth.location to "body" or
+# "query", the live AIRS token lands in one of these, not in a header.
+SECRET_BODY_KEY = re.compile(r"token|key|secret|password", re.IGNORECASE)
+
+
+def redact_secrets(body):
+    """Shallow copy of a parsed JSON object with secret-shaped top-level keys
+    replaced. Only used for what gets printed or written to --log; the
+    original `body` is still used to build the answer sent back to Kong."""
+    if not isinstance(body, dict):
+        return body
+    redacted = dict(body)
+    for key in redacted:
+        if SECRET_BODY_KEY.search(key):
+            redacted[key] = "<redacted>"
+    return redacted
+
 VERDICTS = {
     # action allow, category benign: the request proceeds.
     "allow": {"action": "allow", "category": "benign"},
@@ -91,12 +109,18 @@ class Handler(BaseHTTPRequestHandler):
 
         try:
             body = json.loads(raw)
-            pretty = json.dumps(body, indent=2, ensure_ascii=False)
+            pretty = json.dumps(redact_secrets(body), indent=2, ensure_ascii=False)
         except json.JSONDecodeError as exc:
             body, pretty = None, f"<not JSON: {exc}>\n{raw}"
 
+        # request.auth.location can be "query" as well as "header"; redact the
+        # query string the same way REDACTED covers headers, since a token
+        # placed there would otherwise be printed verbatim below.
+        path_only, sep, _query = self.path.partition("?")
+        shown_path = path_only + ("?<redacted>" if sep else "")
+
         print("=" * 78)
-        print(f"#{seen}  {stamp}  {self.command} {self.path}")
+        print(f"#{seen}  {stamp}  {self.command} {shown_path}")
         print("-" * 78)
         for name, value in self.headers.items():
             shown = "<redacted>" if name.lower() in REDACTED else value
@@ -108,7 +132,7 @@ class Handler(BaseHTTPRequestHandler):
 
         if Handler.log_path:
             with open(Handler.log_path, "a", encoding="utf-8") as handle:
-                handle.write(json.dumps({"at": stamp, "body": body or raw}) + "\n")
+                handle.write(json.dumps({"at": stamp, "body": redact_secrets(body) or raw}) + "\n")
 
         # ScanResponse echoes the correlation identifiers back. All three are
         # optional on both sides and none is deprecated; a null here means the
@@ -133,10 +157,12 @@ class Handler(BaseHTTPRequestHandler):
         """Answer the question the run was started for."""
         print("-" * 78)
 
-        sent = [key for key in CORRELATION_IDS if (body or {}).get(key) is not None]
+        # A non-JSON, list or scalar body must not crash the report.
+        body = body if isinstance(body, dict) else {}
+        sent = [key for key in CORRELATION_IDS if body.get(key) is not None]
         print(f"  correlation ids: {', '.join(sent) if sent else 'none — every scan is its own session'}")
 
-        contents = (body or {}).get("contents")
+        contents = body.get("contents")
         if not isinstance(contents, list) or not contents:
             print("  contents: absent or not a list — the policy did not build one")
             return
@@ -183,6 +209,10 @@ def main():
     Handler.verdict = args.verdict
     Handler.log_path = args.log
 
+    print(
+        f"WARNING: unauthenticated, no TLS, listening on {args.host} — reachable from anything "
+        "that can route to this host, not just localhost. Lab use only."
+    )
     print(f"Listening on {args.host}:{args.port}, answering: {args.verdict}")
     print("Point config request.url at this address, with a dummy api_key.")
     print("LAB ONLY: Prisma AIRS is not scanning while the policy points here.\n")

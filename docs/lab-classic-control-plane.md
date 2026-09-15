@@ -66,10 +66,14 @@ OpenAI-compatible model, replace `name: gpt-4o` with the model name and add,
 under each `model:` block, `options.upstream_url` set to the full
 `.../v1/chat/completions` endpoint. Nothing else changes.
 
+`deck` reads its token from `DECK_KONNECT_TOKEN` in the environment rather
+than a flag, so it never shows up in a process listing:
+
 ```bash
-deck gateway diff deck-lab.yaml --konnect-token "$KONNECT_TOKEN" \
+export DECK_KONNECT_TOKEN="$KONNECT_TOKEN"
+deck gateway diff deck-lab.yaml \
   --konnect-control-plane-name airs-lab-classic --konnect-addr "$KONNECT_ADDR"
-deck gateway sync deck-lab.yaml --konnect-token "$KONNECT_TOKEN" \
+deck gateway sync deck-lab.yaml \
   --konnect-control-plane-name airs-lab-classic --konnect-addr "$KONNECT_ADDR"
 ```
 

@@ -40,7 +40,7 @@ Exactly one per AI Model. Two are accepted and give silently degraded coverage.
 | Observe-only rollout | ✅ | `continue_on_detection` scans and records without blocking; ships commented out |
 | Session and round correlation | ✅ | `session_id` and `transaction_id`, so one conversation is one AI Session. Not on streamed responses |
 | Scan metadata | ✅ | Application, end user, user IP and model name, rendered in the Strata Cloud Manager transaction panel |
-| Role attribution in the scanned text | ✅ | Turns prefixed `user:` / `assistant:`, which is what keeps ordinary conversation benign |
+| Role attribution in the scanned text | ✅ | Turns prefixed `user:` / `assistant:`, which is what keeps ordinary conversation benign. Covers array-shaped `content` (assembled from its `type: "text"` parts) the same as a plain string; `image_url` / `input_audio` parts are skipped, never scanned |
 | Structured evidence | ✅ | The guardrail's own record on Kong's log serializer, as an optional policy with an on/off switch |
 | Regional endpoints | ✅ | One URL, the single point of change |
 | Forward proxy | ✅ | `proxy_config`, http and https pairs, both exercised against the real endpoint. Ships commented out: the published schema page does not list the field yet |
@@ -93,19 +93,34 @@ LAB-VERIFIED 2026-09-15 against a data plane, payloads read off an echo server:
 |---|---|
 | `openai`, string content | `user: … \n\n assistant: … \n\n user: …` — attributed |
 | `anthropic`, **string** content | the same, byte for byte — attributed |
-| `anthropic`, **block-array** content (`[{"type":"text","text":…}]`) | the `text_source` fallback: unattributed, newest first |
+| `anthropic`, **block-array** content (`[{"type":"text","text":…}]`) | attributed the same way — see the fix below (offline-tested, not re-run against this lab) |
 
 So a native format is not automatically degraded. Anthropic's Messages API
 accepts `content` as a plain string, and in that form the rebuild works exactly
-as it does on `openai`. It is the block-array form — which Anthropic, Bedrock
-Converse and any multimodal payload use — that has no string to find, and
-`airs_contents` then returns the flat `text_source` text rather than an empty
-scan. Two offline assertions pin that fallback.
+as it does on `openai`. The block-array form — which Anthropic, Bedrock
+Converse and any multimodal payload use — was the fallback case at the time of
+this lab run: `airs_contents` only read `content` as a string, so an
+array-shaped turn contributed nothing, and once every turn in the conversation
+was shaped that way the whole scan fell back to the flat `text_source` text.
 
-**A scan always happens.** What is lost with the block-array form is the turn
-attribution, and unattributed conversation is exactly what gets ordinary
-multi-turn exchanges flagged as prompt injection. Expect that false positive
-there and tune the profile for it.
+**Array `content` is now assembled and attributed, not just a fallback.**
+Since 2026-09-15, `airs_contents` reads an array `content` part by part:
+`type: "text"` parts are concatenated and labelled `user:` / `assistant:`
+exactly like a string turn; `image_url`, `input_audio` and other non-text
+parts are skipped — they carry nothing to scan, and are never sent to Prisma
+AIRS; a part shape the function does not recognise still falls back to the
+full flat text, so a turn is never silently narrowed. This is also what
+covers a file attachment on an `openai`-format client — Open WebUI and most
+SDKs send `content` as an array once a file is attached — which is the case
+that motivated the fix. Offline-tested only; see
+[verification-status.md](verification-status.md) for the exact tag.
+
+**A scan always happens.** What can still be lost is turn attribution, and
+only on a content shape the function does not recognise at all, which falls
+back to the flat, unattributed `text_source` text — and unattributed
+conversation is exactly what gets ordinary multi-turn exchanges flagged as
+prompt injection. Expect that false positive there and tune the profile for
+it.
 
 ### The response leg on a native format
 

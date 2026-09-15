@@ -7,6 +7,14 @@
 #   export MODEL_NAME="my-gpt-4o"
 #   ./scripts/lab-tool-call-probe.sh
 #
+# KONG_PROXY_URL must be https:// - CLIENT_KEY goes out as a bearer token, and
+# an http:// URL would send it in cleartext. Against a local lab gateway
+# (e.g. http://127.0.0.1:8000) there is nothing to intercept it on the loop-
+# back interface, so set ALLOW_INSECURE_PROXY=1 to proceed anyway:
+#
+#   export KONG_PROXY_URL="http://127.0.0.1:8000"
+#   export ALLOW_INSECURE_PROXY=1
+#
 # Sends one chat completion carrying a marker in every position a tool call can
 # occupy, so scripts/lab-echo-server.py can report which ones reached the text
 # the guardrail actually scans:
@@ -31,6 +39,21 @@ set -u
 PROXY="${KONG_PROXY_URL:?KONG_PROXY_URL is not set}"
 KEY="${CLIENT_KEY:?CLIENT_KEY is not set}"
 MODEL="${MODEL_NAME:-gpt-4o}"
+
+# CLIENT_KEY goes out as a bearer token; an http:// proxy URL sends it in
+# cleartext. Refuse unless the caller explicitly accepts that, which is the
+# normal case for a local lab gateway on loopback.
+case "$PROXY" in
+  https://*) ;;
+  *)
+    echo "WARNING: KONG_PROXY_URL does not start with https:// - CLIENT_KEY would be sent in cleartext." >&2
+    echo "Set ALLOW_INSECURE_PROXY=1 to proceed anyway (fine for a local lab, e.g. http://127.0.0.1:8000)." >&2
+    if [ "${ALLOW_INSECURE_PROXY:-0}" != "1" ]; then
+      exit 2
+    fi
+    echo "ALLOW_INSECURE_PROXY=1 set: proceeding over an insecure proxy URL." >&2
+    ;;
+esac
 
 BODY_FILE="$(mktemp)"
 AUTH_CFG="$(mktemp)"

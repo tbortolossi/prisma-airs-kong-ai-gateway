@@ -378,6 +378,38 @@ services:
                 for _, message in ipairs(body.messages) do
                   if type(message) ~= "table" then return flat end
                   local role, text = message.role, message.content
+                  -- Message content is a string on the common path, but an ARRAY of
+                  -- parts as soon as the client attaches a file -- what Open WebUI and
+                  -- most SDKs send. Skipping such a turn dropped it from the scanned
+                  -- text while the other turns kept count > 0, so the flat fallback
+                  -- never fired and an injection hidden in an array part was never
+                  -- judged. Assemble the text parts instead, and fall back to the flat
+                  -- text on any shape not understood rather than narrowing the scan.
+                  if type(text) == "table" then
+                    local chunks, seen = {}, 0
+                    for _, part in ipairs(text) do
+                      if type(part) ~= "table" then return flat end
+                      seen = seen + 1
+                      local kind = part.type
+                      if kind == "text" then
+                        if type(part.text) ~= "string" then return flat end
+                        chunks[#chunks + 1] = part.text
+                      elseif kind ~= "image_url" and kind ~= "input_audio" and kind ~= "file" then
+                        return flat
+                      end
+                    end
+                    -- image_url, input_audio and file parts carry no text to scan, so they
+                    -- are skipped and a turn made only of those contributes nothing, exactly
+                    -- like an empty content string -- an image with no caption is ordinary
+                    -- multimodal use, not a shape to bail out on. Any OTHER part type,
+                    -- unknown or missing altogether, falls back to the flat text instead, so
+                    -- an unrecognised shape can never silently narrow the scan. Walking zero
+                    -- parts is that same unknown shape -- an empty array, or a map-shaped
+                    -- content table ipairs does not enumerate -- and is only expected on a
+                    -- tool call.
+                    if seen == 0 and type(message.tool_calls) ~= "table" then return flat end
+                    text = table.concat(chunks, "\n")
+                  end
                   if type(text) == "string" and text ~= "" then
                     -- Only user and assistant turns are labelled. A "system:" prefix is
                     -- exactly the shape of a system-prompt spoof, and writing it ourselves
@@ -746,6 +778,38 @@ services:
                     for _, message in ipairs(body.messages) do
                       if type(message) ~= "table" then return flat end
                       local role, text = message.role, message.content
+                      -- Message content is a string on the common path, but an ARRAY of
+                      -- parts as soon as the client attaches a file -- what Open WebUI and
+                      -- most SDKs send. Skipping such a turn dropped it from the scanned
+                      -- text while the other turns kept count > 0, so the flat fallback
+                      -- never fired and an injection hidden in an array part was never
+                      -- judged. Assemble the text parts instead, and fall back to the flat
+                      -- text on any shape not understood rather than narrowing the scan.
+                      if type(text) == "table" then
+                        local chunks, seen = {}, 0
+                        for _, part in ipairs(text) do
+                          if type(part) ~= "table" then return flat end
+                          seen = seen + 1
+                          local kind = part.type
+                          if kind == "text" then
+                            if type(part.text) ~= "string" then return flat end
+                            chunks[#chunks + 1] = part.text
+                          elseif kind ~= "image_url" and kind ~= "input_audio" and kind ~= "file" then
+                            return flat
+                          end
+                        end
+                        -- image_url, input_audio and file parts carry no text to scan, so they
+                        -- are skipped and a turn made only of those contributes nothing, exactly
+                        -- like an empty content string -- an image with no caption is ordinary
+                        -- multimodal use, not a shape to bail out on. Any OTHER part type,
+                        -- unknown or missing altogether, falls back to the flat text instead, so
+                        -- an unrecognised shape can never silently narrow the scan. Walking zero
+                        -- parts is that same unknown shape -- an empty array, or a map-shaped
+                        -- content table ipairs does not enumerate -- and is only expected on a
+                        -- tool call.
+                        if seen == 0 and type(message.tool_calls) ~= "table" then return flat end
+                        text = table.concat(chunks, "\n")
+                      end
                       if type(text) == "string" and text ~= "" then
                         -- Only user and assistant turns are labelled. A "system:" prefix is
                         -- exactly the shape of a system-prompt spoof, and writing it ourselves

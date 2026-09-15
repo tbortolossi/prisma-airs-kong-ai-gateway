@@ -74,6 +74,11 @@ attached next to `airs-scan`, replaces that body with
 responses and streams untouched (measured 2026-09-14); the original text stays
 in the data plane error log. It matches Kong's own wording, so a Kong release
 that rewords the error turns it into a no-op, never into a block.
+The same information-disclosure limit applies to a guardrail function that
+raises or fails to render — that 500 body carries the Lua error text, function
+name and line number, verbatim to the client. The sanitizer now matches those
+two wordings as well ("failed to evaluate function", "failed to render by
+function"), SYNTHESIZED and not independently re-run.
 
 **Generic block message.** The client only ever sees "Blocked by Prisma AIRS",
 optionally followed by " [scan_id=...]" — never the category or the detection

@@ -18,7 +18,14 @@
 #                  unreachable the client got HTTP 500
 #                  {"error":{"message":"Guardrail unavailable"}} instead of the
 #                  connection-refused text; the kongctl variant was verified
-#                  the same day on AI Gateway 2.0.3.
+#                  the same day on AI Gateway 2.0.3. That run only exercised
+#                  the "custom guardrail service" wording, i.e. a failed call
+#                  to Prisma AIRS.
+#   SYNTHESIZED  : the two added matches, "failed to evaluate function" and
+#                  "failed to render by function", for a raising or
+#                  mis-templated guardrail function. See the kongctl file's
+#                  header for the source and the caveat; not independently
+#                  re-run on this classic control plane variant.
 # =============================================================================
 
 _format_version: "3.0"
@@ -34,7 +41,9 @@ plugins:
         - |
           if kong.response.get_status() == 500 then
             local b = kong.response.get_raw_body()
-            if b and b:find("custom guardrail service", 1, true) then
+            if b and (b:find("custom guardrail service", 1, true)
+                or b:find("failed to evaluate function", 1, true)
+                or b:find("failed to render by function", 1, true)) then
               kong.response.set_raw_body('{"error":{"message":"Guardrail unavailable"}}')
             end
           end
