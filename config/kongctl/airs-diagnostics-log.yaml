@@ -94,16 +94,24 @@
 #                  `return kong.request.get_header('h1')`
 #                  https://developer.konghq.com/gateway/pdk/reference/kong.request/
 #                  https://developer.konghq.com/plugins/http-log/
-#   SYNTHESIZED  : the five chunks below are this repository's response to
-#                  the 2026-09-15 finding: wipe request.querystring outright,
-#                  rebuild request.uri and request.url from the PDK's own
+#   LAB-VERIFIED : 2026-09-15, round 21, against the live data plane (PR #20
+#                  applied via kongctl, read back before testing). The five
+#                  chunks below — wipe request.querystring outright, rebuild
+#                  request.uri and request.url from the PDK's own
 #                  path/scheme/host/port instead of echoing the raw value,
 #                  and strip the query string from upstream_uri with a
-#                  pattern match on the nginx variable. They cover this
-#                  record's URI fields. They do NOT cover the node's proxy
-#                  access log — see the LAB-VERIFIED entry above — which is
-#                  not a custom_fields_by_lua field. Not independently run
-#                  against a live data plane by this repository.
+#                  pattern match on the nginx variable — reduce
+#                  `POST /v1/chat/completions?apikey=PROBE&other=kept` to
+#                  ZERO occurrences of the marker in the record
+#                  (request.querystring absent; request.uri and request.url
+#                  rebuilt clean; upstream_uri and ai.proxy.tried_targets
+#                  stripped/absent), with no custom_fields_by_lua error in
+#                  the node log and input/output_processing_latency still
+#                  populated (549 / 365 ms). They still do NOT cover the
+#                  node's proxy access log — see the entry above — which is
+#                  not a custom_fields_by_lua field. proxy-authorization
+#                  removal was not exercised by this probe and stays
+#                  SYNTHESIZED.
 #   DOCUMENTED   : key-auth's `key_in_query` (default true) controls whether
 #                  the plugin accepts the credential as a query parameter at
 #                  all; set it false and the credential is never in the query
@@ -179,9 +187,9 @@ ai_gateway_policies:
       # The query string is not one field. LAB-VERIFIED 2026-09-15 (live data
       # plane): a credential passed as ?apikey=... appears in
       # request.querystring.apikey, request.uri, request.url, upstream_uri
-      # AND ai.proxy.tried_targets[0].upstream_uri. The five chunks below
-      # (SYNTHESIZED, not independently re-run) wipe the querystring map
-      # outright and strip the query string from the other four URI fields,
+      # AND ai.proxy.tried_targets[0].upstream_uri. The five chunks below are
+      # LAB-VERIFIED 2026-09-15 (round 21): the same probe against the
+      # shipped chunks came back with zero occurrences of the marker,
       # using documented PDK calls
       # (https://developer.konghq.com/gateway/pdk/reference/kong.request/;
       # the custom_fields_by_lua-calls-the-PDK pattern is also shown at

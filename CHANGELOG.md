@@ -19,7 +19,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and text hidden in an array part reached the model unscanned. Reproduced
   offline; 14 new assertions (125 total, `scripts/test-verdict-functions.lua`),
   covering text-only, mixed, image-only, `system`-role and malformed
-  array turns. Offline-tested only, not lab-verified.
+  array turns. LAB-VERIFIED 2026-09-15 against the live Prisma AIRS tenant,
+  through the Open WebUI shim path (`X-OpenWebUI-Chat-Id` /
+  `X-OpenWebUI-User-Email`): a benign single array-content turn allowed; a
+  string user turn plus a string assistant turn plus an array-content user
+  turn carrying the injection in its text part blocked (`HTTP 400`,
+  `Blocked by Prisma AIRS`); an image-only turn followed by an assistant
+  turn and a text-part turn allowed; a turn mixing a text part and an
+  `image_url` part allowed; `scripts/test-airs.sh` 5/5. The attributed
+  payload itself was not captured on the echo server this run — the offline
+  suite still pins that shape.
 - The optional `airs-error-sanitizer` policy now also rewrites the `HTTP 500`
   produced when a guardrail function raises or fails to render
   ("failed to evaluate function", "failed to render by function"), which
@@ -36,8 +45,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   policy wipes `request.querystring` outright and strips the query
   string from the other four URI fields, using documented Kong PDK calls
   (`kong.request.get_path`, `.get_scheme`, `.get_host`, `.get_port`).
-  SYNTHESIZED, not independently re-run. It also still removes
-  `proxy-authorization` from the recorded headers (unchanged, SYNTHESIZED).
+  LAB-VERIFIED 2026-09-15: `POST /v1/chat/completions?apikey=PROBE&other=kept`
+  against the live data plane produced a serializer record with zero
+  occurrences of the marker (`request.querystring` absent, the four URI
+  fields rebuilt/stripped clean), no `custom_fields_by_lua` error in the
+  node log, and `input_processing_latency` / `output_processing_latency`
+  still populated (549 / 365 ms). It also still removes
+  `proxy-authorization` from the recorded headers (unchanged, SYNTHESIZED —
+  not exercised by this probe).
   None of this reaches Kong's own proxy access log, which shares the node's
   stdout and prints the raw request line with the query string; no
   `custom_fields_by_lua` entry can touch it. The reliable fix is not to

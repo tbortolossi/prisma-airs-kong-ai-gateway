@@ -93,7 +93,7 @@ LAB-VERIFIED 2026-09-15 against a data plane, payloads read off an echo server:
 |---|---|
 | `openai`, string content | `user: … \n\n assistant: … \n\n user: …` — attributed |
 | `anthropic`, **string** content | the same, byte for byte — attributed |
-| `anthropic`, **block-array** content (`[{"type":"text","text":…}]`) | attributed the same way — see the fix below (offline-tested, not re-run against this lab) |
+| `anthropic`, **block-array** content (`[{"type":"text","text":…}]`) | attributed the same way — see the fix below (LAB-VERIFIED 2026-09-15 via the Open WebUI shim path, not re-run against this `anthropic`-format lab) |
 
 So a native format is not automatically degraded. Anthropic's Messages API
 accepts `content` as a plain string, and in that form the rebuild works exactly
@@ -112,7 +112,11 @@ AIRS; a part shape the function does not recognise still falls back to the
 full flat text, so a turn is never silently narrowed. This is also what
 covers a file attachment on an `openai`-format client — Open WebUI and most
 SDKs send `content` as an array once a file is attached — which is the case
-that motivated the fix. Offline-tested only; see
+that motivated the fix. LAB-VERIFIED 2026-09-15 through the Open WebUI shim
+path: a benign array-content turn allowed, an injection hidden in an
+array-content turn's text part blocked, and an image-only turn and a
+text-plus-image turn both allowed. The attributed payload itself was not
+captured on an echo server this run; see
 [verification-status.md](verification-status.md) for the exact tag.
 
 **A scan always happens.** What can still be lost is turn attribution, and
