@@ -178,6 +178,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **The README is an entry point again, not a manual.** It was 975 lines, most
+  of it reference material a reader had to scroll past to find the install
+  steps. Now 281: what it is, a TL;DR that states plainly what has to be done,
+  the limitations as a table, and a map of where the detail lives. Three new
+  documents carry what moved, unchanged in substance —
+  `docs/limitations.md`, `docs/design-decisions.md` and
+  `docs/verification-status.md`.
+- `docs/limitations.md` records a measurement the README never stated plainly:
+  a streamed answer shorter than one `response_buffer_size` segment is not
+  scanned at all, and lowering the setting does not help — 32 characters
+  streamed records `output_processing_latency: 0` at buffer 100, at 20 and at 1,
+  while the same answer sent non-streamed records 460 ms. Most chat answers are
+  shorter than a segment, so this is the common case rather than an edge case.
+
 - `config/deck/airs-guardrail.yaml` and `config/deck/airs-error-sanitizer.yaml`
   are LAB-VERIFIED: applied with deck to a Konnect classic control plane with a
   `kong/kong-gateway:3.14.0.14` data plane, the model target pointed at a

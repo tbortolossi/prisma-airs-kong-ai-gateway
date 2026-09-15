@@ -34,6 +34,9 @@ CONTRIBUTING.md                      how to work on this repo
 SECURITY.md                          how to report a security issue
 CHANGELOG.md                         released changes
 docs/deployment-guide.md             customer-facing procedure
+docs/limitations.md                  what the integration does not cover
+docs/design-decisions.md             why the configuration is shaped this way
+docs/verification-status.md          every claim with its verification tag
 docs/sources.md                      canonical upstream references
 docs/lab-tool-calls.md               lab procedure: is function calling scanned?
 docs/lab-streaming.md                lab procedure: is a streamed response scanned, and how?
