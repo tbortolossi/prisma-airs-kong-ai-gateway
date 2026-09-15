@@ -31,10 +31,58 @@
 #                  https://developer.konghq.com/plugins/file-log/
 #   DOCUMENTED   : the guardrail fields carried by the record
 #                  https://developer.konghq.com/ai-gateway/ai-audit-log-reference/
+#   DOCUMENTED   : the log serializer's sample record carries the query
+#                  string as its own field, `request.querystring`, a table of
+#                  query parameter name to value; and dotted keys in
+#                  custom_fields_by_lua "create nested fields", the same
+#                  mechanism already relied on for removing one key
+#                  (`authorization`) from the existing `request.headers`
+#                  table without touching its other entries
+#                  https://developer.konghq.com/plugins/file-log/
+#                  https://developer.konghq.com/plugins/file-log/reference/
+#   SYNTHESIZED  : `request.headers.proxy-authorization` is the same removal
+#                  mechanism as the five carriers already run through the
+#                  kongctl counterpart, for a header this policy did not
+#                  previously scrub. Not independently re-run on either
+#                  control plane shape.
+#   LAB-VERIFIED : 2026-09-15, by the reviewer, against a live data plane
+#                  (kongctl shape; see the kongctl counterpart for the full
+#                  entry — the finding applies to file-log regardless of
+#                  which control plane declared it). A request
+#                  `POST /v1/chat/completions?apikey=PROBE&other=kept`
+#                  produced a serializer record carrying the apikey value in
+#                  FIVE places: request.querystring.apikey, request.uri,
+#                  request.url, upstream_uri and
+#                  ai.proxy.tried_targets[0].upstream_uri. Scrubbing only
+#                  request.querystring.apikey, as this file did until now,
+#                  left the other four carrying it in full. Kong's own proxy
+#                  access log, on the same node stdout, also prints the raw
+#                  request line with the query string, which no
+#                  custom_fields_by_lua entry can reach.
+#   DOCUMENTED   : `kong.request.get_path()`, `.get_scheme()`, `.get_host()`
+#                  and `.get_port()` are PDK functions, and
+#                  custom_fields_by_lua chunks may call the PDK — the
+#                  published examples include
+#                  `return kong.request.get_header('h1')`
+#                  https://developer.konghq.com/gateway/pdk/reference/kong.request/
+#                  https://developer.konghq.com/plugins/http-log/
+#   SYNTHESIZED  : the five chunks below are this repository's response to
+#                  the 2026-09-15 finding, the same shape shipped in the
+#                  kongctl counterpart. They cover this record's URI fields.
+#                  They do NOT cover the node's proxy access log — see the
+#                  LAB-VERIFIED entry above — which is not a
+#                  custom_fields_by_lua field. Not independently run against
+#                  a live classic control plane.
+#   DOCUMENTED   : key-auth's `key_in_query` (default true) controls whether
+#                  the plugin accepts the credential as a query parameter at
+#                  all; set it false and the credential is never in the query
+#                  string, on this record or in the access log
+#                  https://developer.konghq.com/plugins/key-auth/reference/
 #   LAB-VERIFIED : see the dated entry added when this file is exercised
-#                  against a live classic control plane. Until that line is
-#                  present, treat it as SYNTHESIZED — the kongctl counterpart
-#                  is the variant that was run.
+#                  against a live classic control plane for the parts of this
+#                  policy not covered above. Until that line is present,
+#                  treat unmarked claims as SYNTHESIZED — the kongctl
+#                  counterpart is the variant that was run.
 # =============================================================================
 
 _format_version: "3.0"
@@ -50,9 +98,34 @@ plugins:
       path: /dev/stdout
       reopen: false
       # Remove the usual client-credential carriers from the record.
+      # LAB-VERIFIED 2026-09-14: authorization, x-api-key, apikey, cookie,
+      # set-cookie. SYNTHESIZED, same mechanism, not independently re-run:
+      # proxy-authorization.
+      #
+      # The query string is not one field. LAB-VERIFIED 2026-09-15 (live data
+      # plane): a credential passed as ?apikey=... appears in
+      # request.querystring.apikey, request.uri, request.url, upstream_uri
+      # AND ai.proxy.tried_targets[0].upstream_uri. The five chunks below
+      # (SYNTHESIZED, not independently re-run) wipe the querystring map
+      # outright and strip the query string from the other four URI fields,
+      # using documented PDK calls
+      # (https://developer.konghq.com/gateway/pdk/reference/kong.request/;
+      # the custom_fields_by_lua-calls-the-PDK pattern is also shown at
+      # https://developer.konghq.com/plugins/http-log/). This still does not
+      # reach Kong's own proxy access log on the same stdout, which prints
+      # the raw request line unfiltered — no custom_fields_by_lua entry can
+      # touch it. The reliable fix is to stop accepting the credential in the
+      # query string at all: key-auth's key_in_query: false (default true;
+      # https://developer.konghq.com/plugins/key-auth/reference/).
       custom_fields_by_lua:
         request.headers.authorization: "return nil"
         request.headers.x-api-key: "return nil"
         request.headers.apikey: "return nil"
         request.headers.cookie: "return nil"
+        request.headers.proxy-authorization: "return nil"
         response.headers.set-cookie: "return nil"
+        request.querystring: "return nil"
+        request.uri: "return kong.request.get_path()"
+        request.url: "return kong.request.get_scheme() .. '://' .. kong.request.get_host() .. ':' .. kong.request.get_port() .. kong.request.get_path()"
+        upstream_uri: "local u = ngx.var.upstream_uri or '' return (u:gsub('%?.*$', ''))"
+        ai.proxy.tried_targets: "return nil"

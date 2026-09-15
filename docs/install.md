@@ -59,11 +59,15 @@ Not on the global endpoint? Change `request.url` too. It is the only place.
 
 ## 3. Apply
 
+`kongctl` reads the token from `KONGCTL_DEFAULT_KONNECT_PAT` in the
+environment, so it never appears on the command line, where any process on
+the host could read it via `ps`.
+
 ```bash
-export KONNECT_PAT="<konnect pat>"
+export KONGCTL_DEFAULT_KONNECT_PAT="<konnect pat>"
 export AI_GATEWAY_ID="<ai gateway id>"
 
-kongctl apply -f config/kongctl/airs-guardrail.yaml --pat "$KONNECT_PAT"
+kongctl apply -f config/kongctl/airs-guardrail.yaml
 ```
 
 This creates the policies. It does **not** put them in the request path.

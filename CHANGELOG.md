@@ -6,6 +6,60 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `airs_contents` now scans chat messages whose `content` is an array of
+  parts — the shape an OpenAI-compatible client sends once a file or image is
+  attached. Text parts are assembled and attributed like a string turn
+  (`user:` / `assistant:`); non-text parts (`image_url`, `input_audio`) are
+  skipped; any part shape the function does not understand falls back to the
+  full flat `text_source` text rather than narrowing the scan. Before this
+  fix, such a turn was silently dropped whenever another turn in the same
+  conversation was a plain string, so the `count == 0` fallback never fired
+  and text hidden in an array part reached the model unscanned. Reproduced
+  offline; 14 new assertions (125 total, `scripts/test-verdict-functions.lua`),
+  covering text-only, mixed, image-only, `system`-role and malformed
+  array turns. Offline-tested only, not lab-verified.
+- The optional `airs-error-sanitizer` policy now also rewrites the `HTTP 500`
+  produced when a guardrail function raises or fails to render
+  ("failed to evaluate function", "failed to render by function"), which
+  previously reached the client with the Lua error text, function name and
+  line number included. SYNTHESIZED: the mechanism is the already-verified
+  match on "custom guardrail service", extended to two more Kong error
+  strings not independently re-run against the sanitizer.
+- The optional `airs-diagnostics-log` policy now scrubs the query string
+  from the record. LAB-VERIFIED 2026-09-15 against the live data plane: a
+  credential passed as `?apikey=...` reaches the serializer record in five
+  fields — `request.querystring.apikey`, `request.uri`, `request.url`,
+  `upstream_uri` and `ai.proxy.tried_targets[0].upstream_uri` — so removing
+  one key of `request.querystring` would leave four copies intact. The
+  policy wipes `request.querystring` outright and strips the query
+  string from the other four URI fields, using documented Kong PDK calls
+  (`kong.request.get_path`, `.get_scheme`, `.get_host`, `.get_port`).
+  SYNTHESIZED, not independently re-run. It also still removes
+  `proxy-authorization` from the recorded headers (unchanged, SYNTHESIZED).
+  None of this reaches Kong's own proxy access log, which shares the node's
+  stdout and prints the raw request line with the query string; no
+  `custom_fields_by_lua` entry can touch it. The reliable fix is not to
+  accept the credential in the query string at all: key-auth's
+  `key_in_query: false` (default `true`).
+- Docs no longer pass the Konnect personal access token on the command line
+  (`kongctl ... --pat`, `deck ... --konnect-token`), where it is visible to
+  any other process on the host through `ps`. `docs/install.md`,
+  `docs/deployment-guide.md` and `docs/lab-classic-control-plane.md` now
+  export `KONGCTL_DEFAULT_KONNECT_PAT` / `DECK_KONNECT_TOKEN` instead.
+- `scripts/run-lua-tests.sh` no longer leaves a temp directory behind on
+  every run: the interpreter was invoked with `exec`, which replaced the
+  script process before its `EXIT` trap could remove `$WORK`.
+- `scripts/lab-echo-server.py` redacts the query string and any top-level
+  request-body key that looks secret-shaped (matching `token`, `key`,
+  `secret` or `password`) from what it prints and logs, and warns at startup
+  that it is unauthenticated and reachable from anything that can route to
+  the host. `scripts/test-airs.sh` and `scripts/lab-tool-call-probe.sh` now
+  refuse a non-`https://` `KONG_PROXY_URL` — `CLIENT_KEY` goes out as a
+  bearer token — unless `ALLOW_INSECURE_PROXY=1` is set, the expected case
+  for a local lab gateway on loopback.
+
 ### Added
 
 - **Optional tool-call scanning, `params.tool_scan`.** Tool definitions and the

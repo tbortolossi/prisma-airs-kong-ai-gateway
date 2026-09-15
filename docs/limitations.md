@@ -8,6 +8,7 @@ and stated here so none of it is discovered in production.
 |---|---|---|
 | MCP traffic | Kong allows no guardrail on MCP at all | Call Prisma AIRS from outside the gateway |
 | Tool definitions and generated tool arguments | No `text_source` exposes them | `params.tool_scan`, off by default |
+| Non-text message parts (images, audio) | The text parts of an array `content` are assembled and scanned; the parts themselves (`image_url`, `input_audio`) are never sent to Prisma AIRS | — |
 | A streamed response | Scanned in ~100-byte segments, and **an answer shorter than one segment is never scanned at all** | Stop the response streaming — see below |
 | The `OUTPUT` phase on a stream | No request context, so no correlation identifiers | Non-streamed exchanges are unaffected |
 | Scan payload size | Prisma AIRS refuses above about 2 MB | `params.context_messages`, or `text_source: last_message` |

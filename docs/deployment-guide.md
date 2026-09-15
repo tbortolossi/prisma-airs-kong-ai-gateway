@@ -161,13 +161,14 @@ function: invalid expression syntax* on every request.
 
 **Two mechanisms enforce fail-closed, and you need both.** `stop_on_error: true` covers the case where the call to Prisma AIRS itself fails — timeout, TLS error, non-2xx. The `airs_verdict` function covers the case where Prisma AIRS answers but the verdict is unusable, including `category: "error"` and `category: "timeout"`, which AIRS returns with `action: "allow"`.
 
-Apply it:
+Apply it. `kongctl` reads the token from `KONGCTL_DEFAULT_KONNECT_PAT` in the
+environment rather than a flag, so it never shows up in a process listing:
 
 ```bash
-export KONNECT_PAT="<your Konnect personal access token>"
+export KONGCTL_DEFAULT_KONNECT_PAT="<your Konnect personal access token>"
 export AI_GATEWAY_ID="<your AI Gateway id>"
 
-kongctl apply -f config/kongctl/airs-guardrail.yaml --pat "$KONNECT_PAT"
+kongctl apply -f config/kongctl/airs-guardrail.yaml
 ```
 
 `kongctl` addresses the US Konnect API by default. If your organisation is in
@@ -175,7 +176,7 @@ another geo, pass it explicitly, or every call returns `404 Not Found` on a
 gateway id that plainly exists:
 
 ```bash
-kongctl apply -f config/kongctl/airs-guardrail.yaml --pat "$KONNECT_PAT" \
+kongctl apply -f config/kongctl/airs-guardrail.yaml \
   --base-url https://eu.api.konghq.com
 ```
 
@@ -187,13 +188,20 @@ If your control plane is a classic Gateway control plane rather than an AI Gatew
 
 That file declares `airs-scan` at the Service level and `airs-prompt-scan` at the Route level, on a dedicated streaming route. The same two levels carry a matching pair of `ai-proxy-advanced` instances: `config.response_streaming: deny` at the Service level, and `config.response_streaming: allow` on the streaming Route ([AI Proxy Advanced reference](https://developer.konghq.com/plugins/ai-proxy-advanced/reference/)). This relies on Kong plugin precedence: a route-level instance of a plugin overrides the service-level instance of the same plugin for requests on that route, so the streaming route allows `stream: true` and gets the `INPUT`-only guardrail coverage, while every other route on the service cannot stream and keeps prompt-and-response coverage. Route it accordingly if you change the paths.
 
+`deck` also reads its token from the environment, `DECK_KONNECT_TOKEN`, for
+the same reason: a token passed as `--konnect-token` is visible to every
+process on the host through `ps`.
+
+```bash
+export DECK_KONNECT_TOKEN="<your Konnect personal access token>"
+```
+
 **`deck gateway sync` deletes everything not in the file you give it.** Any configuration already in your Gateway that is not present in the declarative file is removed. Never run a bare sync of this repository's file against a control plane that already has other Services, Routes or plugins configured. Two safe paths:
 
 1. Preview first, always:
 
    ```bash
    deck gateway diff config/deck/airs-guardrail.yaml \
-     --konnect-token "$KONNECT_PAT" \
      --konnect-control-plane-name "<control plane name>"
    ```
 
@@ -205,7 +213,6 @@ The `ai-proxy-advanced` block in this file expects `OPENAI_KEY` to hold the **fu
 
 ```bash
 deck gateway sync config/deck/airs-guardrail.yaml \
-  --konnect-token "$KONNECT_PAT" \
   --konnect-control-plane-name "<control plane name>"
 ```
 
@@ -248,13 +255,13 @@ reporting success. Apply the policies and the model together:
 
 ```bash
 cat config/kongctl/airs-guardrail.yaml ai-model.yaml \
-  | kongctl apply -f - --pat "$KONNECT_PAT"
+  | kongctl apply -f -
 ```
 
 Then confirm what is actually attached, rather than trusting the apply output:
 
 ```bash
-curl -s -H "Authorization: Bearer $KONNECT_PAT" \
+curl -s -H "Authorization: Bearer $KONGCTL_DEFAULT_KONNECT_PAT" \
   "https://eu.api.konghq.com/v1/ai-gateways/$AI_GATEWAY_ID/models" \
   | jq -r '.data[] | "\(.name): \(.policies)"'
 ```
@@ -411,6 +418,8 @@ When opening a case, send:
 
 **Before handing this procedure to an operator, read one captured record.** Kong's log serializer includes request and response headers, so a credential your clients send to the gateway would be written to the node's log. The supplied policy removes `Authorization`, `x-api-key`, `apikey`, `Cookie` and `Set-Cookie` — verified on a request carrying all of them, none of which reached the record — but if your clients authenticate with a header of another name, add it to `config.custom_fields_by_lua` as `request.headers.<name>: "return nil"`. The record carries no prompt and no model output: the serializer logs no bodies, and `blocked_content` stays empty as long as the guardrail's own `log_blocked_content` is left `false`, as shipped.
 
+The record's URI fields (`request.uri`, `request.url`, `upstream_uri` and the query-string map itself) are also stripped of the query string, because a credential passed as a query parameter — `?apikey=...` — otherwise lands there too. That strips this record only. Kong's own proxy access log shares the same node stdout and prints the raw request line with the query string intact, and nothing in this policy can reach that line. If your clients can authenticate with a query parameter, the reliable fix is not to accept the credential there at all: on `key-auth`, set `key_in_query: false` (it defaults to `true`).
+
 For permanent collection rather than incident capture, use `http-log` against your own collector with the same `custom_fields_by_lua` block; the record is identical.
 
 **Composition with other policies.** Kong's AI Gateway catalogue also offers `ai-sanitizer`, for PII redaction, and `ai-prompt-guard`. Placing `ai-sanitizer` ahead of the guardrail in the chain would send Prisma AIRS redacted text instead of the original: less PII leaves your environment, but Prisma AIRS's own data-loss-prevention detections then have nothing left to inspect. This is a deployment choice to weigh, not a recommendation made here. See the [AI Gateway Policies catalogue](https://developer.konghq.com/ai-gateway/policies/) for the policy names; this guide does not state an execution order between them, since plugin priority for `ai-custom-guardrail` is not published.
@@ -506,8 +515,9 @@ Two limits worth stating to the application team. **Segments of a streamed respo
 - Kong, AI Policy entity: https://developer.konghq.com/ai-gateway/entities/ai-policy/
 - Kong, Plugin entity (precedence, one instance per request): https://developer.konghq.com/gateway/entities/plugin/
 - Kong, declarative configuration with kongctl: https://developer.konghq.com/kongctl/declarative/
-- Kong, kongctl README (`--pat`, `KONGCTL_DEFAULT_KONNECT_PAT`): https://github.com/Kong/kongctl
+- Kong, kongctl README (personal access token flag and the `KONGCTL_DEFAULT_KONNECT_PAT` environment variable): https://github.com/Kong/kongctl
 - Kong, deck gateway sync: https://developer.konghq.com/deck/gateway/sync/
+- Kong, Configuring Konnect for deck (`DECK_KONNECT_TOKEN`): https://developer.konghq.com/deck/gateway/konnect-configuration/
 - Kong, deck tags and `--select-tag`: https://developer.konghq.com/deck/gateway/tags/
 - Kong, AI Proxy Advanced configuration reference (`auth.header_value`, `response_streaming`): https://developer.konghq.com/plugins/ai-proxy-advanced/reference/
 - Kong, AI Gateway streaming (`config.response_streaming` on the AI Model): https://developer.konghq.com/ai-gateway/streaming/
