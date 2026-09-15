@@ -74,35 +74,54 @@ anything here.
 
 ## Client-facing request format
 
-This is the axis that does matter, and it affects one feature rather than
+This is the axis that does matter, and it affects turn attribution rather than
 whether a scan happens. An AI Model's
 [`formats`](https://developer.konghq.com/ai-gateway/entities/ai-model/) array
-controls the shape callers use. `openai` is the default for every provider, and
-Kong translates upstream responses into it; a native format passes the request
+controls the shape callers use: `openai` (the default for every provider, where
+Kong translates upstream responses into the OpenAI shape), `anthropic`,
+`bedrock`, `cohere`, `gemini`, `huggingface`. A native format passes the request
 upstream without conversion.
 
-The scanned text is rebuilt from `messages[]` in the caller's body, which is
+The scanned prompt is rebuilt from `messages[]` in the caller's body — that is
 what gives each turn its `user:` / `assistant:` label and what `params.tool_scan`
-reads. That rebuild is OpenAI-shaped.
+reads. **What decides whether that works is the shape of `messages[].content`,
+not the name of the format.**
 
-| `formats` | Turn attribution and `tool_scan` | Scanning itself |
-|---|:--:|---|
-| `openai` (default) | ✅ | Full |
-| `anthropic`, `bedrock` | ⚠️ | Unaffected — falls back to `text_source`, scanned but unattributed |
-| `cohere`, `gemini`, `huggingface` | ⚠️ | Unaffected — falls back to `text_source`, scanned but unattributed |
+LAB-VERIFIED 2026-09-15 against a data plane, payloads read off an echo server:
 
-The fallback is deliberate and it is not a failure mode: when no usable string
-is found in `messages[]`, `airs_contents` returns the flat `text_source` text
-rather than an empty scan. Two offline assertions pin it. **A scan always
-happens.** What is lost on a native format is the turn attribution — and
-unattributed conversation is what gets ordinary multi-turn exchanges flagged as
-prompt injection, so on a native format expect that false positive and tune the
-profile for it.
+| Caller's body | Prompt scan carries |
+|---|---|
+| `openai`, string content | `user: … \n\n assistant: … \n\n user: …` — attributed |
+| `anthropic`, **string** content | the same, byte for byte — attributed |
+| `anthropic`, **block-array** content (`[{"type":"text","text":…}]`) | the `text_source` fallback: unattributed, newest first |
 
-> **Verification.** The fallback path itself is LAB-VERIFIED through the offline
-> suite. The mapping from each native format to "no usable string in
-> `messages[]`" is **SYNTHESIZED** — inferred from the vendors' own request
-> schemas, where message content is an array of blocks rather than a string.
-> No native format has been exercised against a live gateway. See
-> [verification-status.md](verification-status.md).
+So a native format is not automatically degraded. Anthropic's Messages API
+accepts `content` as a plain string, and in that form the rebuild works exactly
+as it does on `openai`. It is the block-array form — which Anthropic, Bedrock
+Converse and any multimodal payload use — that has no string to find, and
+`airs_contents` then returns the flat `text_source` text rather than an empty
+scan. Two offline assertions pin that fallback.
 
+**A scan always happens.** What is lost with the block-array form is the turn
+attribution, and unattributed conversation is exactly what gets ordinary
+multi-turn exchanges flagged as prompt injection. Expect that false positive
+there and tune the profile for it.
+
+### The response leg on a native format
+
+Measured in the same run, and it is a separate caveat. On `openai` the `OUTPUT`
+scan carried the answer alone, 29 characters. On the native format it carried
+the **raw upstream JSON envelope**, 388 characters — the answer wrapped in the
+provider's own metadata (`model`, `created_at`, durations, token counts).
+
+The response is still scanned, and the answer text is inside what is scanned.
+But a JSON envelope is the kind of text a profile with the source-code detector
+flags, so a native format raises the false-positive risk on the response leg as
+well as on the prompt leg.
+
+> **Verification limit.** This lab paired `formats: [anthropic]` with an
+> `ollama` provider, which is a lab convenience rather than a realistic
+> deployment. The prompt-leg results depend only on the body the caller sends
+> and stand on their own. The response-leg result is consistent with Kong
+> documenting that a native format passes upstream without conversion, but it
+> has not been reproduced against a matching provider.

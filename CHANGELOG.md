@@ -188,8 +188,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   format the rebuild finds no usable string and falls back to `text_source` —
   the scan still happens, the turn attribution is lost, and unattributed
   conversation is what gets ordinary exchanges flagged as prompt injection.
-  Tagged SYNTHESIZED: no native format has been exercised against a live
-  gateway.
+  LAB-VERIFIED 2026-09-15 and it corrected the first inference: a native format
+  is **not** automatically degraded. `anthropic` with a string `content` is
+  attributed byte for byte like `openai`; only the block-array form has no
+  string to find and falls back. What decides it is the shape of
+  `messages[].content`, not the name of the format. Measured separately in the
+  same run: on a native format the `OUTPUT` scan carries the raw upstream JSON
+  envelope rather than the answer alone, which raises the false-positive risk on
+  the response leg too.
 - **`docs/verification-status.md` opens with a Known gaps table**, so the four
   things this repository has not verified are visible before the several hundred
   lines of things it has.
