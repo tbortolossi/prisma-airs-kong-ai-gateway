@@ -6,43 +6,67 @@ and stated here so none of it is discovered in production.
 
 | Limitation | Short version | Mitigation |
 |---|---|---|
-| MCP traffic | Kong allows no guardrail on MCP at all | Call Prisma AIRS from outside the gateway |
+| MCP tool results and catalogues | `request-callout` reaches the MCP scope, but its hooks run only before the call to the upstream server | Call Prisma AIRS from outside the gateway for the response leg |
 | Tool definitions and generated tool arguments | No `text_source` exposes them | `params.tool_scan`, off by default |
 | Non-text message parts (images, audio) | The text parts of an array `content` are assembled and scanned; the parts themselves (`image_url`, `input_audio`) are never sent to Prisma AIRS | — |
 | A streamed response | Scanned in ~100-byte segments, and **an answer shorter than one segment is never scanned at all** | Stop the response streaming — see below |
 | The `OUTPUT` phase on a stream | No request context, so no correlation identifiers | Non-streamed exchanges are unaffected |
 | Scan payload size | Prisma AIRS refuses above about 2 MB | `params.context_messages`, or `text_source: last_message` |
-| Prompt scanning | Never affected by any of the above | — |
+| Prompt scanning on the LLM path | Never affected by any of the above | — |
 
-The last row is the one to keep in mind: **every limitation on this page is on
-the response leg.** The prompt is scanned before the model is called, on every
-path, in every posture.
+The last row is the one to keep in mind for the LLM path: **every limitation
+on that path is on the response leg.** The prompt is scanned before the model
+is called, on every path, in every posture. MCP is a separate traffic path,
+handled below, and the request leg there is reachable in configuration even
+though `ai-custom-guardrail` cannot run on it.
 
-What this configuration scans is the prompt text and the response text on the LLM
-path. Two adjacent surfaces are not covered, and are stated here rather than left
-to be discovered in production.
+## MCP: the request leg is reachable, the response leg is not
 
-## MCP traffic is out of scope
-
-Kong does not allow a guardrail on MCP. The
+`ai-custom-guardrail` is refused on MCP traffic, exactly as documented and now
+also confirmed from the control plane's own API (LAB-VERIFIED 2026-09-20): a
+Konnect AI Gateway 2.x control plane answers HTTP 400 to a guardrail policy
+named on an AI MCP Server —
+`policy "..." of type "ai-custom-guardrail" is not supported for scope
+"mcp-servers"`. The
 [AI MCP Proxy plugin](https://developer.konghq.com/plugins/ai-mcp-proxy/) lists
 "applying guardrails to MCP AI plugin requests and responses" as not supported,
 and instructs that the plugin must not be configured together with other AI
-plugins on the same Service or Route. The AI Policies attachable to an
-[AI MCP Server](https://developer.konghq.com/ai-gateway/entities/ai-mcp-server/)
-entity are rate limiting, request and response transformation, logging and
-OAuth-based ACL gating — access control and volumetry, not content inspection.
-`ai-custom-guardrail` therefore cannot see an MCP tool call, and neither can this
-integration.
+plugins on the same Service or Route.
 
-The limit is on the Kong side alone. Prisma AIRS already scans MCP: API Intercept
-accepts a `contents[].tool_event` object — `metadata.ecosystem`, `method`,
-`server_name`, `tool_invoked`, plus `input` and `output` — on the same
-`/v1/scan/sync/request` endpoint used here, and reports its findings under
-`tool_detected`, covering tool definition poisoning and credential leakage. See
+That refusal is specific to `ai-custom-guardrail`, not to every policy type,
+which is not how this repository described it before 2026-09-20.
+[`request-callout`](https://developer.konghq.com/plugins/request-callout/) —
+a different, generic-callout policy type — **is** accepted at the same MCP
+scope: attached via `policies:` to an
+[AI MCP Server](https://developer.konghq.com/ai-gateway/entities/ai-mcp-server/)
+entity, it applies cleanly, and its request-leg Lua hooks
+(`callouts[].request.by_lua`, `callouts[].response.by_lua`) execute on real
+MCP JSON-RPC traffic — measured firing once per request and once per response
+on every `tools/call` sent through the route. A hook that calls
+`kong.response.exit(403, ...)` refuses the call in protocol: HTTP 403, with
+the caller's own JSON-RPC `id` echoed back in the body, so an MCP client sees
+a tool failure rather than a dropped connection (all LAB-VERIFIED 2026-09-20).
+
+What stays unreachable, and is the reason tool poisoning is still not
+covered: `request-callout` declares exactly three Lua hooks
+(`callouts[].request.by_lua`, `callouts[].response.by_lua`,
+`config.upstream.by_lua`), and all three run **before** the call to the
+upstream MCP server. `callouts[].response.by_lua` sees the callout's own
+reply, not the MCP server's. Tool results returned by `tools/call`, and tool
+catalogues from `tools/list` or `initialize`, are therefore never inspected by
+anything configured this way. This is a limit of Kong's extension point, not
+of Prisma AIRS: API Intercept accepts a `contents[].tool_event` object —
+`metadata.ecosystem`, `method`, `server_name`, `tool_invoked`, plus `input`
+and `output` — on the same `/v1/scan/sync/request` endpoint used here, and
+reports its findings under `tool_detected`, covering tool definition
+poisoning and credential leakage. See
 [Detect MCP Threats](https://docs.paloaltonetworks.com/ai-runtime-security/administration/api-intercept-create-configure-security-profile/detect-mcp-threats).
-Until Kong exposes an extension point on MCP traffic, covering MCP means calling
-Prisma AIRS from outside the gateway — for example the
+
+What was measured 2026-09-20 is the scope, the execution of the hooks, and the
+HTTP enforcement mechanics — not a scan against a live Prisma AIRS tenant
+through this path, and no configuration for it ships in `config/`. For the
+response leg today, covering MCP still means calling Prisma AIRS from outside
+the gateway — for example the
 [Prisma AIRS MCP Server](https://docs.paloaltonetworks.com/ai-runtime-security/activation-and-onboarding/prisma-airs-mcp-server-for-centralized-ai-agent-security/understanding-the-prisma-airs-mcp-server),
 where the agent invokes the scan itself. Kong's per-tool ACLs remain useful next
 to that, but they restrict which tool may be called, not what travels inside it.
