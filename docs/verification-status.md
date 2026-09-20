@@ -26,6 +26,8 @@ the configuration.
 | `config/deck/airs-diagnostics-log.yaml` | **SYNTHESIZED** | Apply it with `deck` on a classic control plane |
 | `kong.client.get_consumer()` populates `metadata.app_user` | Reachable, never returned a value | One lab run with a key-auth consumer on the model |
 | The 2026-09-15 payload work on the `deck` variant | Not re-run | The Lua is byte-identical and CI enforces that, but the deck path has not been exercised since 2026-09-14 |
+| A `request-callout` policy on an AI MCP Server can call Prisma AIRS and enforce a real scan verdict, end to end | **SYNTHESIZED** — the scope, the hook execution and the HTTP enforcement mechanics are LAB-VERIFIED 2026-09-20 (below); a call to Prisma AIRS from inside the callout is not | Wiring `config.upstream.by_lua` (or a callout target) to `/v1/scan/sync/request` with a real profile, and reproducing a block from the live tenant through the MCP route |
+| A newly created AI MCP Server always appears immediately on a running data plane | Not established either way | One `docker restart` made a stuck route live on one lab data plane; whether that is reliably needed, or a one-off, needs more than one occurrence |
 
 Every configuration key used here, and every allowed value, comes from the
 published Kong plugin schema and the Prisma AIRS OpenAPI client — see
@@ -243,6 +245,51 @@ the untested column and probed three more limits:
   source code. The prompt now asks for prose; five consecutive runs pass. A
   block on that case points at the profile, and the category is in the scan
   log.
+
+A twelfth round, 2026-09-20, went back to the MCP boundary this repository had
+described as closed, and found the closure overstated:
+
+- **`ai-custom-guardrail` is refused at the MCP scope.** Naming it in
+  `policies:` on an AI MCP Server got a Konnect AI Gateway 2.x control plane
+  HTTP 400, verbatim: `policy "..." of type "ai-custom-guardrail" is not
+  supported for scope "mcp-servers"`. This confirms Kong's documented refusal
+  from the API itself, not only from the narrative plugin page.
+- **`request-callout` is accepted at the same scope.** A `request-callout`
+  policy plus an AI MCP Server entity naming it in `policies:` applied
+  cleanly: `Creating ai_gateway_policy ✓`, `Creating ai_gateway_mcp_server ✓`.
+- **Its Lua hooks execute on real MCP JSON-RPC traffic.**
+  `callouts[].request.by_lua` and `callouts[].response.by_lua`, each logging a
+  counter, both fired once per `tools/call` sent through the route — two
+  requests, two `request_by_lua`, two `response_by_lua` in the data plane log.
+- **Enforcement works, in protocol.** A hook calling
+  `kong.response.exit(403, {...})` refused a `tools/call` with HTTP 403 and a
+  body carrying the caller's own JSON-RPC `id` echoed back —
+  `{"error":{"code":-32001,"message":"Blocked by Prisma AIRS
+  [...]"},"jsonrpc":"2.0","id":9}` — so an MCP client surfaces a tool failure
+  rather than a dropped connection. The stand-in MCP server's own access log
+  shows the blocked call never reached it.
+- **A newly created AI MCP Server did not come up on the already-running data
+  plane.** Six requests over about a minute all got HTTP 404
+  `no Route matched with those values` while the entity was correct on the
+  control plane and the LLM routes on the same data plane kept answering
+  normally throughout. A `docker restart` of the data plane made the route
+  live on the next poll; nothing was logged at any point. One occurrence on
+  one lab data plane, recorded as an operational note rather than a
+  documented platform behaviour.
+
+What this round does not establish: `request-callout` declares exactly three
+hooks (`callouts[].request.by_lua`, `callouts[].response.by_lua`,
+`config.upstream.by_lua`), and all three run **before** the call to the
+upstream MCP server — the response hook sees the callout's own reply, not the
+MCP server's. Tool results and tool catalogues (`tools/list`, `initialize`)
+therefore stay unreachable, and tool poisoning stays uncovered; that part of
+the earlier closure was right. No scan against a live Prisma AIRS tenant was
+run through this path — what is proven is the scope, the hook execution and
+the HTTP enforcement mechanics, not an end-to-end scan. This overturns the
+general claim, standing since 2026-09-14, that config-only MCP coverage is
+closed: that was accurate for `ai-custom-guardrail` specifically and wrong as
+a statement about the MCP scope as a whole. See
+[docs/limitations.md](limitations.md) for the corrected shape.
 
 An eleventh round traced a false positive from the Strata Cloud Manager UI back
 to this repository's own payload, and fixed it:

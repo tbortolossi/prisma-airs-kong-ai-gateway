@@ -33,7 +33,8 @@ licence — see [Disclaimer](#disclaimer).*
 | Streaming | ⚠️ | Segments of ~100 bytes. An answer shorter than one segment is **not scanned** |
 | Pre-tool call | ⚠️ | Generated tool arguments, via `params.tool_scan`. Ships off |
 | Post-tool call | ✅ | Tool results scanned on return |
-| MCP | ❌ | Kong exposes no guardrail on MCP traffic |
+| MCP, prompt leg | ⚠️ | No guardrail extension point, but `request-callout` reaches the scope and can enforce a block on the request |
+| MCP, tool results and catalogues | ❌ | `request-callout`'s hooks all run before the call to the upstream MCP server |
 | Any upstream LLM provider | ✅ | No provider list to maintain: Kong normalises the exchange before the guardrail runs |
 | Non-OpenAI client formats | ⚠️ | Scanned either way. Turn attribution needs a string `messages[].content`, which `anthropic` provides and a block array does not |
 
@@ -65,13 +66,15 @@ Commands, prerequisites and every optional setting:
 
 | | |
 |---|---|
-| MCP traffic is not covered at all | the restriction is Kong's, not Prisma AIRS's |
+| MCP tool results and catalogues are not covered | `request-callout` reaches the MCP scope, but its hooks run only before the call to the upstream server |
 | A streamed answer shorter than ~100 bytes is never scanned | which is most chat answers |
 | A block on a stream arrives after the flagged segment reached the client | streamed response coverage is best effort |
 | Prisma AIRS refuses a scan above about 2 MB | cap the history with `params.context_messages` |
 
-**Prompt scanning is never affected by any of this** — every row is on the
-response leg.
+**Prompt and response scanning on the chat completion path are never affected
+by any of this** — the streaming and payload-size rows are on the response
+leg, and the MCP row is a separate traffic path that this configuration does
+not touch at all.
 
 Detail and measurements: **[docs/limitations.md](docs/limitations.md)**.
 

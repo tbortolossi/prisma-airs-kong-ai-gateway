@@ -6,6 +6,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **The MCP boundary is narrower than this repository stated.**
+  `ai-custom-guardrail` is still refused at the MCP scope — LAB-VERIFIED
+  2026-09-20 from the control plane's own API: `policy "..." of type
+  "ai-custom-guardrail" is not supported for scope "mcp-servers"` — but
+  `request-callout` is accepted there, and its request-leg Lua hooks
+  (`callouts[].request.by_lua`, `callouts[].response.by_lua`) run on real MCP
+  JSON-RPC traffic and can enforce a block: a hook calling
+  `kong.response.exit(403, ...)` refused a `tools/call` with the caller's own
+  JSON-RPC `id` echoed back in the body, and the stand-in MCP server's access
+  log confirmed the blocked call never reached it. What stays unreachable:
+  `request-callout`'s three hooks all run before the call to the upstream MCP
+  server, so tool results and tool catalogues (`tools/list`, `initialize`)
+  are never inspected — tool poisoning stays uncovered, and that part of the
+  previous claim was right. No scan against a live Prisma AIRS tenant was run
+  through this path; only the scope, the hook execution and the HTTP
+  enforcement mechanics are LAB-VERIFIED. Also recorded: a newly created AI
+  MCP Server did not come up on an already-running data plane until it was
+  restarted (one occurrence, not claimed as documented behaviour).
+  `README.md`, `docs/coverage.md`, `docs/limitations.md`,
+  `docs/verification-status.md` and `docs/sources.md` corrected. Ships no
+  configuration change: `config/`, `scripts/` and `lab/` untouched.
+
 ### Fixed
 
 - `airs_contents` now scans chat messages whose `content` is an array of

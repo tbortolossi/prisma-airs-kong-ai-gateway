@@ -21,7 +21,8 @@ practice, with the measurements: [limitations.md](limitations.md).
 | Streaming | ⚠️ | Scanned in segments of about 100 bytes. An answer shorter than one segment is **not scanned at all**, and a block arrives after that segment has reached the client |
 | Pre-tool call | ⚠️ | The arguments a model generates for a tool call, and optionally the `tools[]` catalogue, via `params.tool_scan`. Ships off — no `text_source` exposes them |
 | Post-tool call | ✅ | Tool results scanned on return: a `role: "tool"` message is message content like any other |
-| MCP | ❌ | Kong allows no guardrail on MCP traffic. The limit is Kong's — Prisma AIRS scans MCP natively |
+| MCP, prompt/tool-call leg | ⚠️ | `ai-custom-guardrail` is refused at the MCP scope, but `request-callout` is accepted there and its request-leg hooks can enforce a block on live MCP JSON-RPC traffic |
+| MCP, tool results and catalogues | ❌ | `request-callout`'s hooks all run before the call to the upstream MCP server, so the reply never reaches them. Prisma AIRS scans these natively; the limit is Kong's extension point |
 
 ## Which policy to attach
 
