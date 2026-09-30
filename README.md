@@ -79,25 +79,24 @@ curl -fsSLo airs-guardrail.yaml \
 # 2. Konnect access
 export KONGCTL_DEFAULT_KONNECT_PAT="<konnect pat>"
 export AI_GATEWAY_ID="<ai gateway id>"
+export KONGCTL_DEFAULT_KONNECT_BASE_URL="https://us.api.konghq.com"   # https://eu.api.konghq.com for an EU organisation
 
-# 3. First update from a file that carried the values: read them off the live policy
-kongctl get ai-gateway policies --gateway-id "$AI_GATEWAY_ID" airs-scan -o json
-#   config.params.profile            -> AIRS_PROFILE
-#   config.params.app_name           -> AIRS_APP_NAME
-#   config.params.session_header     -> AIRS_SESSION_HEADER
-#   config.params.transaction_header -> AIRS_TRANSACTION_HEADER
-#   config.params.user_header        -> AIRS_USER_HEADER
-#   config.request.url               -> AIRS_SCAN_URL
+# 3. Export the six variables from the values already on the live policy
+#    (needs jq; nothing to copy by hand)
+eval "$(kongctl get ai-gateway policies --gateway-id "$AI_GATEWAY_ID" airs-scan -o json | jq -r '
+  .config as $c | {
+    AIRS_PROFILE: $c.params.profile,
+    AIRS_APP_NAME: $c.params.app_name,
+    AIRS_SESSION_HEADER: $c.params.session_header,
+    AIRS_TRANSACTION_HEADER: $c.params.transaction_header,
+    AIRS_USER_HEADER: $c.params.user_header,
+    AIRS_SCAN_URL: $c.request.url
+  } | to_entries[] | "export \(.key)=\(.value | @sh)"')"
 
-# 4. Export them (the same six variables as step 2 above)
-export AIRS_PROFILE="<value of config.params.profile>"
-export AIRS_APP_NAME="<value of config.params.app_name>"
-export AIRS_SESSION_HEADER="<value of config.params.session_header>"
-export AIRS_TRANSACTION_HEADER="<value of config.params.transaction_header>"
-export AIRS_USER_HEADER="<value of config.params.user_header>"
-export AIRS_SCAN_URL="<value of config.request.url>"
+# 4. Check them: six lines, none of them "null"
+env | grep -E '^AIRS_(PROFILE|APP_NAME|SESSION_HEADER|TRANSACTION_HEADER|USER_HEADER|SCAN_URL)='
 
-# 5. Apply (add --base-url https://eu.api.konghq.com for an EU organisation)
+# 5. Apply
 kongctl apply -f airs-guardrail.yaml
 
 # 6. Read back, then validate
@@ -105,8 +104,10 @@ kongctl get ai-gateway policies --gateway-id "$AI_GATEWAY_ID" airs-scan -o json
 ./scripts/test-airs.sh
 ```
 
-With the same values exported, the apply changes only what the new version
-changed. `kongctl apply` does not remove a key that is on the live policy but
+A value that prints `null` is a field your live policy does not have yet
+(it predates that setting): export it by hand with the value from step 2
+above. With the same values exported, the apply changes only what the new
+version changed. `kongctl apply` does not remove a key that is on the live policy but
 absent from the file: an optional key added by hand stays until it is set back
 explicitly or removed in the Konnect UI.
 

@@ -150,17 +150,26 @@ merge.
 
 **Coming from a version that carried the values in the file** (`profile:
 "kong-airs-prod"` and so on): read your current values from the live policy
-before the first update, and export them:
+before the first update, and export them. With `jq`, one command does it:
 
 ```bash
-kongctl get ai-gateway policies --gateway-id "$AI_GATEWAY_ID" airs-scan -o json
-# config.params.profile        -> AIRS_PROFILE
-# config.params.app_name       -> AIRS_APP_NAME
-# config.params.session_header -> AIRS_SESSION_HEADER
-# config.params.transaction_header -> AIRS_TRANSACTION_HEADER
-# config.params.user_header    -> AIRS_USER_HEADER
-# config.request.url           -> AIRS_SCAN_URL
+eval "$(kongctl get ai-gateway policies --gateway-id "$AI_GATEWAY_ID" airs-scan -o json | jq -r '
+  .config as $c | {
+    AIRS_PROFILE: $c.params.profile,
+    AIRS_APP_NAME: $c.params.app_name,
+    AIRS_SESSION_HEADER: $c.params.session_header,
+    AIRS_TRANSACTION_HEADER: $c.params.transaction_header,
+    AIRS_USER_HEADER: $c.params.user_header,
+    AIRS_SCAN_URL: $c.request.url
+  } | to_entries[] | "export \(.key)=\(.value | @sh)"')"
+
+env | grep -E '^AIRS_(PROFILE|APP_NAME|SESSION_HEADER|TRANSACTION_HEADER|USER_HEADER|SCAN_URL)='   # six lines, none "null"
 ```
+
+It maps `config.params.profile`, `.app_name`, `.session_header`,
+`.transaction_header`, `.user_header` and `config.request.url` onto the six
+variables. A value that prints `null` is a field your live policy does not
+have yet: export it by hand with the typical value from step 2.
 
 With the same values exported, the apply reports `No changes detected` on those
 fields and updates only what changed in the new version.
