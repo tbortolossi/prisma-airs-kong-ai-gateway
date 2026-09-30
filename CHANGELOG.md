@@ -8,6 +8,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Deployment values now come from the environment; the configuration file is
+  never edited.** The security profile, the application label, the three
+  correlation/user header names and the Prisma AIRS endpoint are read at apply
+  time from `AIRS_PROFILE`, `AIRS_APP_NAME`, `AIRS_SESSION_HEADER`,
+  `AIRS_TRANSACTION_HEADER`, `AIRS_USER_HEADER` and `AIRS_SCAN_URL` (kongctl
+  `!env`), or their `DECK_`-prefixed equivalents (deck `${{ env }}`), in both
+  policies of both files. An update is now a replacement of the file and a new
+  apply, with nothing to merge, and an unset variable stops the apply before
+  anything is sent instead of pushing the `kong-airs-prod` placeholder over a
+  live profile. **Action on upgrade:** export the six variables with the
+  values currently on your policy before the first apply — see
+  `docs/install.md`, "Updating to a new version". LAB-VERIFIED 2026-09-30 for
+  kongctl (apply against a live AI Gateway 2.x control plane, values read back
+  on both policies, `scripts/test-airs.sh` 5/5 on a live tenant); the deck
+  substitution is verified offline with `deck file render`, not on a classic
+  control plane. `scripts/check-plugin-schema.py --parity` treats the two
+  syntaxes as equal when they name the same variable.
 - **The MCP boundary is narrower than this repository stated.**
   `ai-custom-guardrail` is still refused at the MCP scope — LAB-VERIFIED
   2026-09-20 from the control plane's own API: `policy "..." of type

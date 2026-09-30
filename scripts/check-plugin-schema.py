@@ -114,6 +114,28 @@ def collect_deck_plugins(doc: Any) -> list[tuple[str, dict]]:
     return service_level + route_level
 
 
+DECK_ENV_RE = re.compile(r'^\$\{\{\s*env\s+"DECK_([A-Z0-9_]+)"\s*\}\}$')
+
+
+def normalize_env(node: Any) -> Any:
+    """Map kongctl `!env NAME` and deck `${{ env "DECK_NAME" }}` to one form.
+
+    Both tools substitute a deployment value from the environment, each with
+    its own syntax (and deck requires the DECK_ prefix), so the two files
+    compare equal when they read the same variable at the same place.
+    """
+    if isinstance(node, TagValue) and node.tag == "!env" and isinstance(node.value, str):
+        return ("env", node.value)
+    if isinstance(node, str):
+        match = DECK_ENV_RE.match(node)
+        return ("env", match.group(1)) if match else node
+    if isinstance(node, dict):
+        return {key: normalize_env(value) for key, value in node.items()}
+    if isinstance(node, list):
+        return [normalize_env(value) for value in node]
+    return node
+
+
 def run_parity() -> bool:
     # Every YAML under config/ must at least parse with the kongctl tags, so an
     # optional file that is not part of the parity pair is still checked.
@@ -123,8 +145,8 @@ def run_parity() -> bool:
             print(f"ok - {extra}: parses")
     kongctl_doc = load_yaml(KONGCTL_FILE)
     deck_doc = load_yaml(DECK_FILE)
-    kongctl = collect_kongctl_policies(kongctl_doc)
-    deck = collect_deck_plugins(deck_doc)
+    kongctl = [(name, normalize_env(cfg)) for name, cfg in collect_kongctl_policies(kongctl_doc)]
+    deck = [(name, normalize_env(cfg)) for name, cfg in collect_deck_plugins(deck_doc)]
 
     ok = True
     if len(kongctl) != len(deck):

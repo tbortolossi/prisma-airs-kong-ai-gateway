@@ -16,6 +16,7 @@ the configuration.
 
 | Claim | Status | What would close it |
 |---|---|---|
+| `config/deck/airs-guardrail.yaml` reads its six deployment values from `DECK_AIRS_*` variables | **SYNTHESIZED**, verified offline — `deck file render --populate-env-vars` (deck 1.66.1) substitutes all six in both instances, and stops with `environment variable 'DECK_AIRS_PROFILE' present in state file but not set` when one is missing | A `deck gateway sync` on a classic control plane with the variables set, and a read-back |
 | The `OUTPUT` scan on a native `formats` value carries the raw upstream JSON envelope rather than the answer alone | **LAB-VERIFIED 2026-09-15, with a caveat** | Reproducing it with a provider that matches the format. The lab paired `formats: [anthropic]` with an `ollama` provider; the prompt-leg results depend only on the caller's body and stand on their own, the response-leg one does not |
 | A non-`openai` `formats` value is not automatically degraded | **LAB-VERIFIED 2026-09-15**, and it corrected an inference | `anthropic` with string `content` is attributed byte for byte like `openai`. At the time of this run, block-array `content` fell back to `text_source`; a same-day security-audit fix (below) now assembles its `type: "text"` parts instead of falling back, and that fix has not itself been run against this lab |
 | `airs_contents` assembles and attributes array-shaped `content` (`type: "text"` parts joined and labelled `user:` / `assistant:`), and falls back to the full flat `text_source` text on any part shape it does not recognise | **LAB-VERIFIED 2026-09-15** — 14 offline assertions, `scripts/test-verdict-functions.lua` (125 total), plus a live run through the Open WebUI shim: a benign array-content turn allowed, an injection hidden in an array-content turn's text part blocked (`HTTP 400`), an image-only turn and a text-plus-image turn both allowed, `scripts/test-airs.sh` 5/5 | Not yet captured: the attributed payload itself on the echo server — the exact assembled/labelled shape in flight is still pinned only by the offline suite |
@@ -417,6 +418,22 @@ report a problem" question:
   a local echo server answering in under a millisecond, not an unpopulated
   field. Everything else guardrail-side is populated only on a block: an allowed
   request carries no `scan_id`.
+
+**Lab run of 2026-09-30 — deployment values from the environment.** Same
+AI Gateway 2.x control plane and data plane, `kongctl` 1.15.1, live Prisma
+AIRS tenant.
+
+- **`!env` resolves inside a policy's `config`, in `params` and in
+  `request.url`.** With the six variables set to the values already on the
+  live policies, `kongctl apply` reported `No changes detected`: the tags were
+  resolved to exactly the stored values, not sent literally. Changing one
+  variable (`AIRS_APP_NAME`) and re-applying updated both policies, and
+  `kongctl get ai-gateway policies ... -o json` read the new value back on
+  both; `scripts/test-airs.sh` then passed 5/5 against the live tenant, the
+  profile itself coming from `AIRS_PROFILE`. The original value was restored
+  and read back the same way.
+- **An unset variable stops the apply before anything is sent**: `failed to
+  resolve !env tags ...: environment variable not set: AIRS_PROFILE`, exit 1.
 
 What remains unconfirmed:
 

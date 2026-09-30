@@ -62,7 +62,7 @@ In Strata Cloud Manager:
 
 1. Go to **Insights → AI Runtime Security → API Intercept** and create an AI Runtime Security API application. Copy the generated API key. This is the value of the `x-pan-token` header.
 2. Create an **API security profile** and enable the detections you want to enforce: prompt injection, sensitive data (DLP), malicious URLs, toxic content, malicious code, database security as applicable.
-3. Note the **exact profile name**. It must match the `params.profile` value in the policy configuration.
+3. Note the **exact profile name**. It is the value of `AIRS_PROFILE` in Step 3.
 4. Set the profile to **alert-only** for the initial rollout. You will switch it to block in Step 6, after measuring false positives on real traffic.
 
 ---
@@ -122,7 +122,18 @@ If your organisation requires a managed secret store, Kong supports Azure Key Va
 
 ## Step 3 — Apply the AI Policies
 
-Use [`config/kongctl/airs-guardrail.yaml`](../config/kongctl/airs-guardrail.yaml) from this repository. The optional [`config/kongctl/airs-error-sanitizer.yaml`](../config/kongctl/airs-error-sanitizer.yaml) can be applied the same way; see "Guardrail failure responses" under Operational considerations for what it changes. Adjust `params.profile` to your Prisma AIRS profile name and `params.app_name` to a label that will identify this gateway in your Prisma AIRS scan logs.
+Use [`config/kongctl/airs-guardrail.yaml`](../config/kongctl/airs-guardrail.yaml) from this repository. The optional [`config/kongctl/airs-error-sanitizer.yaml`](../config/kongctl/airs-error-sanitizer.yaml) can be applied the same way; see "Guardrail failure responses" under Operational considerations for what it changes. Do not edit the file. The values that differ from one deployment to the next are read from environment variables by `kongctl` at apply time, through its [`!env` tag](https://developer.konghq.com/kongctl/declarative/). Export them on the machine or pipeline that runs `kongctl`:
+
+| Variable | Value |
+|---|---|
+| `AIRS_PROFILE` | your Prisma AIRS profile name, exactly (Step 1) |
+| `AIRS_APP_NAME` | a label that will identify this gateway in your Prisma AIRS scan logs, for example `kong-ai-gateway` |
+| `AIRS_SESSION_HEADER` | the request header your application uses for the conversation id, for example `x-airs-session-id` |
+| `AIRS_TRANSACTION_HEADER` | the request header naming one round, for example `x-airs-transaction-id` |
+| `AIRS_USER_HEADER` | the request header carrying the end user, for example `x-airs-user` |
+| `AIRS_SCAN_URL` | `https://service.api.aisecurity.paloaltonetworks.com/v1/scan/sync/request`, or your regional endpoint |
+
+All six are required: if one is unset, `kongctl` stops before sending anything. A header your application does not send is harmless; the gateway falls back to its own identifiers. These values are stored in the policy in clear text and are not secrets; the API key stays a vault reference (Step 2). Because the file carries no deployment value, a later update is a replacement of the file and a new apply, with nothing to merge.
 
 Three things in that file are worth understanding before you apply it.
 
@@ -167,8 +178,20 @@ environment rather than a flag, so it never shows up in a process listing:
 ```bash
 export KONGCTL_DEFAULT_KONNECT_PAT="<your Konnect personal access token>"
 export AI_GATEWAY_ID="<your AI Gateway id>"
+export AIRS_PROFILE="<your profile name>"
+export AIRS_APP_NAME="kong-ai-gateway"
+export AIRS_SESSION_HEADER="x-airs-session-id"
+export AIRS_TRANSACTION_HEADER="x-airs-transaction-id"
+export AIRS_USER_HEADER="x-airs-user"
+export AIRS_SCAN_URL="https://service.api.aisecurity.paloaltonetworks.com/v1/scan/sync/request"
 
 kongctl apply -f config/kongctl/airs-guardrail.yaml
+```
+
+Read the policy back to confirm the values landed:
+
+```bash
+kongctl get ai-gateway policies --gateway-id "$AI_GATEWAY_ID" airs-scan -o json
 ```
 
 `kongctl` addresses the US Konnect API by default. If your organisation is in
@@ -184,7 +207,7 @@ At this point the policies exist but are not yet enforcing anything. They take e
 
 ### Classic Gateway control plane
 
-If your control plane is a classic Gateway control plane rather than an AI Gateway 2.x one, use [`config/deck/airs-guardrail.yaml`](../config/deck/airs-guardrail.yaml) instead. The `config` block is identical; only the wrapper differs.
+If your control plane is a classic Gateway control plane rather than an AI Gateway 2.x one, use [`config/deck/airs-guardrail.yaml`](../config/deck/airs-guardrail.yaml) instead. The `config` block is identical; only the wrapper differs. `deck` [substitutes only variables prefixed with `DECK_`](https://developer.konghq.com/deck/reference/env-variables/), so export the same six values as `DECK_AIRS_PROFILE`, `DECK_AIRS_APP_NAME`, `DECK_AIRS_SESSION_HEADER`, `DECK_AIRS_TRANSACTION_HEADER`, `DECK_AIRS_USER_HEADER` and `DECK_AIRS_SCAN_URL`. `deck gateway diff` masks their values in its output.
 
 That file declares `airs-scan` at the Service level and `airs-prompt-scan` at the Route level, on a dedicated streaming route. The same two levels carry a matching pair of `ai-proxy-advanced` instances: `config.response_streaming: deny` at the Service level, and `config.response_streaming: allow` on the streaming Route ([AI Proxy Advanced reference](https://developer.konghq.com/plugins/ai-proxy-advanced/reference/)). This relies on Kong plugin precedence: a route-level instance of a plugin overrides the service-level instance of the same plugin for requests on that route, so the streaming route allows `stream: true` and gets the `INPUT`-only guardrail coverage, while every other route on the service cannot stream and keeps prompt-and-response coverage. Route it accordingly if you change the paths.
 
@@ -448,7 +471,7 @@ Two cautions before enabling `catalogue`. A JSON parameter schema reads as sourc
 
 | Field | Value |
 |---|---|
-| `app_name` | `params.app_name`, the label identifying this gateway |
+| `app_name` | `params.app_name` (from `AIRS_APP_NAME`), the label identifying this gateway |
 | `ai_model` | the AI Model serving the request |
 | `user_ip` | the client address as Kong sees it |
 | `app_user` | the authenticated Kong consumer, or the `params.user_header` request header when no consumer is authenticated |
@@ -486,7 +509,7 @@ Two limits worth stating to the application team. **Segments of a streamed respo
 | Traffic passes through during a Prisma AIRS outage | `stop_on_error: false` | Fail-open by design. See "Fail-closed behaviour" above. Revert to `true` to restore enforcement |
 | `401` from Prisma AIRS in the data plane logs | The vault reference did not resolve, and the literal string was sent as the token | Confirm `AIRS_TOKEN` is set in the container and that the revision was applied. Fall back to a managed vault backend if needed |
 | `401` from the LLM provider (deck variant) | `OPENAI_KEY` holds the bare key instead of the full header value | `ai-proxy-advanced`'s `auth.header_value` expects the complete value, for example `Bearer <key>`. Store the scheme in the secret, not just the key |
-| `404` or profile error from Prisma AIRS | `params.profile` does not match the profile name in Strata Cloud Manager | Correct the value and re-apply |
+| `404` or profile error from Prisma AIRS | `AIRS_PROFILE` does not match the profile name in Strata Cloud Manager | Correct the variable and re-apply |
 | Policies applied but nothing is scanned | Policies not attached to the model, or no AI Proxy in the chain | Check the `policies` array on the AI Model, or set `global: true`. Confirm AI Proxy or AI Proxy Advanced is configured |
 | A streamed response gets only partial scanning, or none at all | Streamed content still below `config.response_buffer_size` when the stream ends is never scanned; a large buffer value hides this over an entire short answer | Deny streaming on `airs-scan` models (`config.response_streaming: deny`), or attach `airs-prompt-scan` to models that must stream. See Operational considerations |
 | Data plane logs `metric ... block_detail has unexpected type string, expected table` | `config.metrics.block_detail` resolved to a string instead of a table | Return `detail` as a table from `airs_verdict` (`reason`, `category`, `detections`), as supplied |

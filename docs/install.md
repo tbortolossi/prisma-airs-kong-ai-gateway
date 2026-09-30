@@ -3,13 +3,13 @@
 Four things, all four required:
 
 1. put the Prisma AIRS key on the data planes,
-2. set your security profile name in the YAML,
+2. export your deployment values where `kongctl` runs,
 3. apply the policies,
 4. **attach one of them to your AI Model.**
 
-Steps 2 and 4 are the ones that get missed, and they fail in opposite
-directions: the placeholder profile blocks everything, a policy that is not
-attached passes everything unscanned. Step 5 tells them apart in one run.
+Step 4 is the one that gets missed: a policy that is not attached passes
+everything unscanned. A wrong profile name in step 2 fails the other way and
+blocks everything. Step 5 tells them apart in one run.
 
 For a production rollout — progressive enablement, the classic control plane
 variant, troubleshooting — read [deployment-guide.md](deployment-guide.md)
@@ -45,17 +45,41 @@ kubectl create secret generic prisma-airs -n <ns> \
 # then mount it as AIRS_TOKEN in the data plane deployment
 ```
 
-## 2. Set two values in the YAML
+## 2. Export your deployment values
 
-In `params`, on both policies in
-[`config/kongctl/airs-guardrail.yaml`](../config/kongctl/airs-guardrail.yaml):
+Do not edit
+[`config/kongctl/airs-guardrail.yaml`](../config/kongctl/airs-guardrail.yaml).
+Every value that differs from one deployment to the next is read from an
+environment variable by `kongctl` at apply time, through its
+[`!env` tag](https://developer.konghq.com/kongctl/declarative/). Set them on the
+machine or pipeline that runs `kongctl` — not on the data planes:
 
-| Key | Set it to | Ships as |
+| Variable | Set it to | Typical value |
 |---|---|---|
-| `profile` | your security profile name, exactly | `kong-airs-prod` — a placeholder. Leave it and **every request fails closed** |
-| `app_name` | a label for this gateway in your scan logs | `kong-ai-gateway` |
+| `AIRS_PROFILE` | your security profile name, exactly | — no default. A wrong name makes **every request fail closed** |
+| `AIRS_APP_NAME` | a label for this gateway in your scan logs | `kong-ai-gateway` |
+| `AIRS_SESSION_HEADER` | the request header your application uses for the conversation id | `x-airs-session-id` |
+| `AIRS_TRANSACTION_HEADER` | the request header naming one round, if your application sends one | `x-airs-transaction-id` |
+| `AIRS_USER_HEADER` | the request header carrying the end user | `x-airs-user` |
+| `AIRS_SCAN_URL` | the Prisma AIRS scan endpoint | `https://service.api.aisecurity.paloaltonetworks.com/v1/scan/sync/request`, or your regional endpoint |
 
-Not on the global endpoint? Change `request.url` too. It is the only place.
+```bash
+export AIRS_PROFILE="<your security profile name>"
+export AIRS_APP_NAME="kong-ai-gateway"
+export AIRS_SESSION_HEADER="x-airs-session-id"
+export AIRS_TRANSACTION_HEADER="x-airs-transaction-id"
+export AIRS_USER_HEADER="x-airs-user"
+export AIRS_SCAN_URL="https://service.api.aisecurity.paloaltonetworks.com/v1/scan/sync/request"
+```
+
+All six are required. If one is unset, `kongctl` stops before sending anything
+(`environment variable not set: AIRS_PROFILE`), so a missing value can never
+overwrite a live one. A header your application does not send is harmless:
+the gateway falls back to its own identifiers — see "Optional settings" below.
+
+These are the values stored in the policy in clear text; they are not secrets.
+The API key is not among them: it stays a vault reference, resolved on the
+data plane (step 1).
 
 ## 3. Apply
 
@@ -71,6 +95,12 @@ kongctl apply -f config/kongctl/airs-guardrail.yaml
 ```
 
 This creates the policies. It does **not** put them in the request path.
+
+Read the result back to check the values landed:
+
+```bash
+kongctl get ai-gateway policies --gateway-id "$AI_GATEWAY_ID" airs-scan -o json
+```
 
 ## 4. Attach one policy to your AI Model
 
@@ -105,13 +135,47 @@ export CLIENT_KEY="<client credential>"
 
 On a classic control plane, same configuration wrapped for `deck`:
 [`config/deck/airs-guardrail.yaml`](../config/deck/airs-guardrail.yaml) and the
-[deployment guide](deployment-guide.md).
+[deployment guide](deployment-guide.md). `deck` only substitutes variables
+prefixed with `DECK_`, so the same six values are exported as
+`DECK_AIRS_PROFILE`, `DECK_AIRS_APP_NAME` and so on.
+
+## Updating to a new version
+
+1. Replace `config/kongctl/airs-guardrail.yaml` with the new file, as is.
+2. Re-run step 3 with the same six variables exported.
+3. Read the policy back (step 3) and re-run `./scripts/test-airs.sh`.
+
+Your values live in your environment, not in the file, so there is nothing to
+merge.
+
+**Coming from a version that carried the values in the file** (`profile:
+"kong-airs-prod"` and so on): read your current values from the live policy
+before the first update, and export them:
+
+```bash
+kongctl get ai-gateway policies --gateway-id "$AI_GATEWAY_ID" airs-scan -o json
+# config.params.profile        -> AIRS_PROFILE
+# config.params.app_name       -> AIRS_APP_NAME
+# config.params.session_header -> AIRS_SESSION_HEADER
+# config.params.transaction_header -> AIRS_TRANSACTION_HEADER
+# config.params.user_header    -> AIRS_USER_HEADER
+# config.request.url           -> AIRS_SCAN_URL
+```
+
+With the same values exported, the apply reports `No changes detected` on those
+fields and updates only what changed in the new version.
+
+> [!NOTE]
+> `kongctl apply` updates a value that changed, but does not remove a key that
+> is on the live policy and absent from the file. If you added an optional key
+> by hand (for example `rejection_mode` or `tool_scan`) and want it gone, set it
+> back to its default value explicitly, or remove it in the Konnect UI.
 
 ---
 
 ## Optional settings
 
-### `params`, all off unless set
+### `params`, all off unless the caller sends the header
 
 | Key | What it turns on |
 |---|---|
@@ -121,13 +185,16 @@ On a classic control plane, same configuration wrapped for `deck`:
 | `tool_scan` | `calls` scans the arguments a model generates for a tool call; `catalogue` adds the `tools[]` declaration — expect a source-code detector to flag that one |
 | `context_messages` | caps how many recent conversation parts are assembled, to bound cost and stay under the 2 MB scan limit |
 
+`session_header`, `transaction_header` and `user_header` are set from
+`AIRS_SESSION_HEADER`, `AIRS_TRANSACTION_HEADER` and `AIRS_USER_HEADER` (step
+2). `tool_scan` and `context_messages` ship commented out in the file.
+
 With a front-end that already knows its user and its conversation, naming two
 headers is the whole integration. Open WebUI, for instance:
 
-```yaml
-params:
-  session_header: "x-openwebui-chat-id"
-  user_header: "x-openwebui-user-email"
+```bash
+export AIRS_SESSION_HEADER="x-openwebui-chat-id"
+export AIRS_USER_HEADER="x-openwebui-user-email"
 ```
 
 ### Add-on policies
