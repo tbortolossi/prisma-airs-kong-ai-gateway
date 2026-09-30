@@ -19,7 +19,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   anything is sent instead of pushing the `kong-airs-prod` placeholder over a
   live profile. **Action on upgrade:** export the six variables with the
   values currently on your policy before the first apply — see
-  `docs/install.md`, "Updating to a new version". LAB-VERIFIED 2026-09-30 for
+  `docs/install.md`, "Updating to a new version", which give a `kongctl get`
+  + `jq` command exporting all six from the live policy. LAB-VERIFIED 2026-09-30 for
   kongctl (apply against a live AI Gateway 2.x control plane, values read back
   on both policies, `scripts/test-airs.sh` 5/5 on a live tenant); the deck
   substitution is verified offline with `deck file render`, not on a classic
