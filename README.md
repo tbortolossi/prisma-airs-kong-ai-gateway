@@ -36,7 +36,7 @@ licence — see [Disclaimer](#disclaimer).*
 | MCP, prompt leg | ⚠️ | No guardrail extension point, but `request-callout` reaches the scope and can enforce a block on the request |
 | MCP, tool results and catalogues | ❌ | `request-callout`'s hooks all run before the call to the upstream MCP server |
 | Any upstream LLM provider | ✅ | No provider list to maintain: Kong normalises the exchange before the guardrail runs |
-| Non-OpenAI client formats | ⚠️ | Scanned either way. Turn attribution needs a string `messages[].content`, which `anthropic` provides and a block array does not |
+| Non-OpenAI client formats | ⚠️ | Scanned either way. Turns are attributed from `messages[].content` as a string or as an array of `text` parts; a shape without `messages[]` (Gemini) or with unknown parts falls back to the flat text |
 
 Full matrix — capabilities, control planes, request formats:
 **[docs/coverage.md](docs/coverage.md)**.

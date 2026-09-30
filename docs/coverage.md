@@ -43,7 +43,8 @@ Exactly one per AI Model. Two are accepted and give silently degraded coverage.
 | Scan metadata | ✅ | Application, end user, user IP and model name, rendered in the Strata Cloud Manager transaction panel |
 | Role attribution in the scanned text | ✅ | Turns prefixed `user:` / `assistant:`, which is what keeps ordinary conversation benign. Covers array-shaped `content` (assembled from its `type: "text"` parts) the same as a plain string; `image_url` / `input_audio` parts are skipped, never scanned |
 | Structured evidence | ✅ | The guardrail's own record on Kong's log serializer, as an optional policy with an on/off switch |
-| Regional endpoints | ✅ | One URL, the single point of change |
+| Regional endpoints | ✅ | One variable, `AIRS_SCAN_URL`, the single point of change |
+| Update by file replacement | ✅ | Profile, app name, header names and endpoint are read from environment variables at apply time (`AIRS_*` for kongctl, `DECK_AIRS_*` for deck); the file is never edited, so a new version is dropped in and re-applied |
 | Forward proxy | ✅ | `proxy_config`, http and https pairs, both exercised against the real endpoint. Ships commented out: the published schema page does not list the field yet |
 | Generic body when the scan fails | ✅ | Optional policy replacing the `HTTP 500` internal text |
 | DLP masking | ❌ | `allow_masking` exists in the plugin schema; not used or tested here |
@@ -56,7 +57,7 @@ Exactly one per AI Model. Two are accepted and give silently degraded coverage.
 | | Supported | Description |
 |---|:--:|---|
 | AI Gateway 2.x, `kongctl` | ✅ | The primary target. Policies of type `ai-custom-guardrail` |
-| Classic Gateway control plane, `deck` | ✅ | The same `config` block, wrapped as a plugin on a Service or Route |
+| Classic Gateway control plane, `deck` | ✅ | The same `config` block, wrapped as a plugin on a Service or Route. Deployment values come from `DECK_AIRS_*` variables, verified with `deck file render`, not yet on a classic control plane |
 
 ## Upstream LLM providers
 
