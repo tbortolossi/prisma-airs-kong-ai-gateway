@@ -33,7 +33,7 @@
 #   SYNTHESIZED  : the two added matches, "failed to evaluate function" and
 #                  "failed to render by function", are Kong's own wording for
 #                  a raising or a mis-templated guardrail function (see
-#                  CLAUDE.local.md Q12, LAB-VERIFIED 2026-09-08, for the
+#                  docs/verification-status.md, LAB-VERIFIED 2026-09-08, for the
 #                  "failed to evaluate function" body observed verbatim on the
 #                  client). Their presence in the 500 body has not itself been
 #                  re-run against this sanitizer; the mechanism is identical to
