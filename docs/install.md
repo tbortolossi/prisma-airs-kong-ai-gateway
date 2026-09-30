@@ -163,7 +163,7 @@ eval "$(kongctl get ai-gateway policies --gateway-id "$AI_GATEWAY_ID" airs-scan 
     AIRS_SCAN_URL: $c.request.url
   } | to_entries[] | "export \(.key)=\(.value | @sh)"')"
 
-env | grep ^AIRS_     # six lines, none of them "null"
+env | grep -E '^AIRS_(PROFILE|APP_NAME|SESSION_HEADER|TRANSACTION_HEADER|USER_HEADER|SCAN_URL)='   # six lines, none "null"
 ```
 
 It maps `config.params.profile`, `.app_name`, `.session_header`,

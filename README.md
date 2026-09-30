@@ -94,7 +94,7 @@ eval "$(kongctl get ai-gateway policies --gateway-id "$AI_GATEWAY_ID" airs-scan 
   } | to_entries[] | "export \(.key)=\(.value | @sh)"')"
 
 # 4. Check them: six lines, none of them "null"
-env | grep ^AIRS_
+env | grep -E '^AIRS_(PROFILE|APP_NAME|SESSION_HEADER|TRANSACTION_HEADER|USER_HEADER|SCAN_URL)='
 
 # 5. Apply
 kongctl apply -f airs-guardrail.yaml
