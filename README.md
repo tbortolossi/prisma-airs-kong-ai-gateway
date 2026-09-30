@@ -46,8 +46,16 @@ Full matrix — capabilities, control planes, request formats:
 Four things, all four required:
 
 1. put the Prisma AIRS key on the data planes as `AIRS_TOKEN`,
-2. set your security profile name in
-   [`config/kongctl/airs-guardrail.yaml`](config/kongctl/airs-guardrail.yaml),
+2. export your deployment values where `kongctl` runs — the file itself is
+   never edited:
+   ```bash
+   export AIRS_PROFILE="<your security profile name>"
+   export AIRS_APP_NAME="kong-ai-gateway"
+   export AIRS_SESSION_HEADER="x-airs-session-id"
+   export AIRS_TRANSACTION_HEADER="x-airs-transaction-id"
+   export AIRS_USER_HEADER="x-airs-user"
+   export AIRS_SCAN_URL="https://service.api.aisecurity.paloaltonetworks.com/v1/scan/sync/request"
+   ```
 3. `kongctl apply -f config/kongctl/airs-guardrail.yaml`,
 4. **attach one policy to your AI Model** — `airs-scan`, or `airs-prompt-scan`
    for a model that must stream. Never both.
@@ -55,9 +63,52 @@ Four things, all four required:
 Then `./scripts/test-airs.sh`: one allowed case, three blocked, one streaming
 probe.
 
-Steps 2 and 4 are the ones that get missed, and they fail in opposite
-directions — the placeholder profile blocks everything, a policy that is not
-attached passes everything unscanned.
+Step 4 is the one that gets missed: a policy that is not attached passes
+everything unscanned. A missing variable in step 2 cannot slip through — the
+apply stops before anything is sent.
+
+### Updating an existing deployment
+
+Replace the file, apply it with the same variables. Nothing to merge.
+
+```bash
+# 1. Download the current policy file
+curl -fsSLo airs-guardrail.yaml \
+  https://raw.githubusercontent.com/tbortolossi/prisma-airs-kong-ai-gateway/main/config/kongctl/airs-guardrail.yaml
+
+# 2. Konnect access
+export KONGCTL_DEFAULT_KONNECT_PAT="<konnect pat>"
+export AI_GATEWAY_ID="<ai gateway id>"
+
+# 3. First update from a file that carried the values: read them off the live policy
+kongctl get ai-gateway policies --gateway-id "$AI_GATEWAY_ID" airs-scan -o json
+#   config.params.profile            -> AIRS_PROFILE
+#   config.params.app_name           -> AIRS_APP_NAME
+#   config.params.session_header     -> AIRS_SESSION_HEADER
+#   config.params.transaction_header -> AIRS_TRANSACTION_HEADER
+#   config.params.user_header        -> AIRS_USER_HEADER
+#   config.request.url               -> AIRS_SCAN_URL
+
+# 4. Export them (the same six variables as step 2 above)
+export AIRS_PROFILE="<value of config.params.profile>"
+export AIRS_APP_NAME="<value of config.params.app_name>"
+export AIRS_SESSION_HEADER="<value of config.params.session_header>"
+export AIRS_TRANSACTION_HEADER="<value of config.params.transaction_header>"
+export AIRS_USER_HEADER="<value of config.params.user_header>"
+export AIRS_SCAN_URL="<value of config.request.url>"
+
+# 5. Apply (add --base-url https://eu.api.konghq.com for an EU organisation)
+kongctl apply -f airs-guardrail.yaml
+
+# 6. Read back, then validate
+kongctl get ai-gateway policies --gateway-id "$AI_GATEWAY_ID" airs-scan -o json
+./scripts/test-airs.sh
+```
+
+With the same values exported, the apply changes only what the new version
+changed. `kongctl apply` does not remove a key that is on the live policy but
+absent from the file: an optional key added by hand stays until it is set back
+explicitly or removed in the Konnect UI.
 
 Commands, prerequisites and every optional setting:
 **[docs/install.md](docs/install.md)**.

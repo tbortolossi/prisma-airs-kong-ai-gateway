@@ -90,7 +90,10 @@ against the AIRS schema, not that Kong accepts the configuration.
 **3. Secrets never appear in this repository.**
 The API key is always a vault reference (`{vault://env/airs-token}`) or a
 placeholder. No real token, no customer tenant identifier, no profile name from a
-real deployment. Placeholder profile name is `kong-airs-prod`.
+real deployment. The config files carry no deployment value at all: the profile,
+app name, header names and AIRS endpoint are `!env AIRS_*` (kongctl) and
+`${{ env "DECK_AIRS_*" }}` (deck), so a customer update is a file replacement.
+Placeholder profile name in docs is `<your profile name>`.
 
 **4. Fail-closed is the default, through two mechanisms that cover two
 different failures.** `stop_on_error: true` handles a call to Prisma AIRS that

@@ -29,6 +29,13 @@
 # scripts/run-lua-tests.sh enforces that, but treat the deck run itself as
 # untested until someone repeats it.
 #
+# Do not edit the values in this file. The profile, the application label,
+# the correlation and user header names and the AIRS endpoint are read from
+# DECK_-prefixed environment variables at sync time (DECK_AIRS_PROFILE,
+# DECK_AIRS_APP_NAME, DECK_AIRS_SESSION_HEADER, DECK_AIRS_TRANSACTION_HEADER,
+# DECK_AIRS_USER_HEADER, DECK_AIRS_SCAN_URL), so an update replaces this file
+# as a whole without losing them. See docs/install.md.
+#
 # VERIFICATION STATUS: see the header of config/kongctl/airs-guardrail.yaml
 # and README.md, "Verification status". This file itself is LAB-VERIFIED
 # 2026-09-14 on a Konnect classic control plane with a
@@ -140,24 +147,32 @@ services:
           # 2026-09-08 run measured. A block on a segment cuts the stream after
           # that segment has already reached the client.
 
+          # Deployment-specific values come from the environment of the machine
+
+          # running deck, substituted by deck from DECK_-prefixed variables: the
+
+          # file itself is the same for every deployment and is replaced as a
+
+          # whole on update. The list and the values to use are in docs/install.md.
+
           params:
-            profile: "kong-airs-prod"
-            app_name: "kong-ai-gateway"
+            profile: '${{ env "DECK_AIRS_PROFILE" }}'
+            app_name: '${{ env "DECK_AIRS_APP_NAME" }}'
             # Request headers the caller may use to name its own correlation
             # identifiers. session_header names the CONVERSATION, which only the
             # caller can know: absent, the conversation is the single exchange.
             # transaction_header names the ROUND, and is optional too - absent,
             # the round is Kong's own request id, which is already correct. Point
             # both at whatever headers your application already sends.
-            transaction_header: "x-airs-transaction-id"
-            session_header: "x-airs-session-id"
+            transaction_header: '${{ env "DECK_AIRS_TRANSACTION_HEADER" }}'
+            session_header: '${{ env "DECK_AIRS_SESSION_HEADER" }}'
             # Metadata enrichment. user_header names a request header carrying the
             # end user, used only when no Kong consumer is authenticated; it is
             # caller-controlled, so it labels a scan and never authenticates one.
             # context_messages caps how many conversation messages are sent as scan
             # context; leave it out to send the whole conversation, as the flat
             # payload always did.
-            user_header: "x-airs-user"
+            user_header: '${{ env "DECK_AIRS_USER_HEADER" }}'
             # context_messages: "20"
             # tool_scan turns function-call scanning on. Absent or any other value:
             # off, and the scanned text is exactly what text_source produced, which
@@ -172,7 +187,7 @@ services:
             # tool_scan: "calls"
 
           request:
-            url: https://service.api.aisecurity.paloaltonetworks.com/v1/scan/sync/request
+            url: '${{ env "DECK_AIRS_SCAN_URL" }}'
             # request.auth is the schema's dedicated slot for the credential:
             # value is referenceable, so the vault reference resolves here, and
             # it is stored encrypted, which config.params is not. LAB-VERIFIED
@@ -563,24 +578,32 @@ services:
               # response_buffer_size is not set here either (schema default, and
               # unused with guarding_mode INPUT: response guard only).
 
+              # Deployment-specific values come from the environment of the machine
+
+              # running deck, substituted by deck from DECK_-prefixed variables: the
+
+              # file itself is the same for every deployment and is replaced as a
+
+              # whole on update. The list and the values to use are in docs/install.md.
+
               params:
-                profile: "kong-airs-prod"
-                app_name: "kong-ai-gateway"
+                profile: '${{ env "DECK_AIRS_PROFILE" }}'
+                app_name: '${{ env "DECK_AIRS_APP_NAME" }}'
                 # Request headers the caller may use to name its own correlation
                 # identifiers. session_header names the CONVERSATION, which only the
                 # caller can know: absent, the conversation is the single exchange.
                 # transaction_header names the ROUND, and is optional too - absent,
                 # the round is Kong's own request id, which is already correct. Point
                 # both at whatever headers your application already sends.
-                transaction_header: "x-airs-transaction-id"
-                session_header: "x-airs-session-id"
+                transaction_header: '${{ env "DECK_AIRS_TRANSACTION_HEADER" }}'
+                session_header: '${{ env "DECK_AIRS_SESSION_HEADER" }}'
                 # Metadata enrichment. user_header names a request header carrying the
                 # end user, used only when no Kong consumer is authenticated; it is
                 # caller-controlled, so it labels a scan and never authenticates one.
                 # context_messages caps how many conversation messages are sent as scan
                 # context; leave it out to send the whole conversation, as the flat
                 # payload always did.
-                user_header: "x-airs-user"
+                user_header: '${{ env "DECK_AIRS_USER_HEADER" }}'
                 # context_messages: "20"
                 # tool_scan turns function-call scanning on. Absent or any other value:
                 # off, and the scanned text is exactly what text_source produced, which
@@ -595,7 +618,7 @@ services:
                 # tool_scan: "calls"
 
               request:
-                url: https://service.api.aisecurity.paloaltonetworks.com/v1/scan/sync/request
+                url: '${{ env "DECK_AIRS_SCAN_URL" }}'
                 # request.auth is the schema's dedicated slot for the credential:
                 # value is referenceable, so the vault reference resolves here, and
                 # it is stored encrypted, which config.params is not. LAB-VERIFIED
