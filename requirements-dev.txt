@@ -1,2 +1,2 @@
 # Used by scripts/check-plugin-schema.py to parse the kongctl/deck YAML.
-pyyaml==6.0.3
+pyyaml==6.0.4
